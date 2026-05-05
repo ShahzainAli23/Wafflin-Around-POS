@@ -32,6 +32,8 @@ type CartItem = {
 type ActiveOrder = {
   id: string;
   order_no: number;
+  subtotal: number;
+  discount: number;
   total: number;
   payment_method: "cash" | "nayapay" | "meezan";
   created_at: string;
@@ -147,6 +149,7 @@ export default function POSPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [isUpdatingOrder, setIsUpdatingOrder] = useState(false);
+  const [discountApplied, setDiscountApplied] = useState(false);
 
   const [activeOrders, setActiveOrders] = useState<ActiveOrder[]>([]);
   const [activeOrderItems, setActiveOrderItems] = useState<ActiveOrderItem[]>(
@@ -243,7 +246,9 @@ export default function POSPage() {
 
     const { data: orderData, error: orderError } = await supabase
       .from("orders")
-      .select("id, order_no, total, payment_method, created_at, status")
+      .select(
+        "id, order_no, subtotal, discount, total, payment_method, created_at, status"
+      )
       .eq("worker_id", workerId)
       .eq("status", "active")
       .order("created_at", { ascending: false });
@@ -329,7 +334,9 @@ export default function POSPage() {
     if (isUpdatingOrder || isCheckingOut) return;
 
     setIsUpdatingOrder(true);
-    setNotice(status === "completed" ? "Completing order..." : "Cancelling order...");
+    setNotice(
+      status === "completed" ? "Completing order..." : "Cancelling order..."
+    );
 
     try {
       const {
@@ -583,11 +590,35 @@ export default function POSPage() {
   function removeItem(index: number) {
     if (isCheckingOut || isUpdatingOrder) return;
     setCart((prev) => prev.filter((_, i) => i !== index));
+
+    if (cart.length <= 1) {
+      setDiscountApplied(false);
+    }
   }
 
-  const total = useMemo(() => {
+  const subtotal = useMemo(() => {
     return cart.reduce((sum, item) => sum + item.lineTotal, 0);
   }, [cart]);
+
+  const discountAmount = useMemo(() => {
+    if (!discountApplied) return 0;
+    return Math.round(subtotal * 0.2);
+  }, [subtotal, discountApplied]);
+
+  const total = useMemo(() => {
+    return subtotal - discountAmount;
+  }, [subtotal, discountAmount]);
+
+  function toggleDiscount() {
+    if (isCheckingOut || isUpdatingOrder) return;
+
+    if (cart.length === 0) {
+      setNotice("Add items first");
+      return;
+    }
+
+    setDiscountApplied((prev) => !prev);
+  }
 
   async function checkout() {
     if (isCheckingOut || isUpdatingOrder) return;
@@ -611,15 +642,18 @@ export default function POSPage() {
       }
 
       const currentCart = [...cart];
+      const currentSubtotal = subtotal;
+      const currentDiscount = discountAmount;
       const currentTotal = total;
       const currentPaymentMethod = paymentMethod;
+      const loyaltyDiscountApplied = discountApplied;
 
       const { data: order, error: orderError } = await supabase
         .from("orders")
         .insert({
           worker_id: user.id,
-          subtotal: currentTotal,
-          discount: 0,
+          subtotal: currentSubtotal,
+          discount: currentDiscount,
           total: currentTotal,
           payment_method: currentPaymentMethod,
           status: "active",
@@ -675,15 +709,19 @@ export default function POSPage() {
         user_id: user.id,
         action: "ORDER_CREATED",
         details: {
+          subtotal: currentSubtotal,
+          discount: currentDiscount,
           total: currentTotal,
           paymentMethod: currentPaymentMethod,
           items: currentCart.length,
           status: "active",
+          loyaltyDiscountApplied,
         },
       });
 
       setCart([]);
       setPaymentMethod("cash");
+      setDiscountApplied(false);
       setHistory([]);
       setScreen("root");
       await loadActiveOrders(user.id);
@@ -1341,9 +1379,24 @@ export default function POSPage() {
                               <p className="text-sm text-[#8b6a5b]">
                                 Order #{order.order_no}
                               </p>
-                              <h3 className="text-2xl font-bold text-[#241814] mt-1">
-                                Rs. {order.total}
-                              </h3>
+
+                              {Number(order.discount) > 0 ? (
+                                <div>
+                                  <p className="text-sm text-[#7b5b4f] line-through mt-1">
+                                    Rs. {order.subtotal}
+                                  </p>
+                                  <h3 className="text-2xl font-bold text-[#241814]">
+                                    Rs. {order.total}
+                                  </h3>
+                                  <p className="text-sm font-bold text-[#d81b72]">
+                                    Loyalty discount: - Rs. {order.discount}
+                                  </p>
+                                </div>
+                              ) : (
+                                <h3 className="text-2xl font-bold text-[#241814] mt-1">
+                                  Rs. {order.total}
+                                </h3>
+                              )}
                             </div>
 
                             <span className="rounded-full bg-[#ffe5f1] text-[#a10d52] px-3 py-1 text-sm font-bold capitalize">
@@ -1579,9 +1632,47 @@ export default function POSPage() {
             </div>
 
             <div className="mt-5 border-t border-[#ead8c2] pt-5">
-              <div className="flex items-center justify-between">
-                <p className="text-[#7b5b4f] font-bold">Total</p>
-                <p className="text-3xl font-bold text-[#241814]">Rs. {total}</p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[#7b5b4f] font-bold">Subtotal</p>
+                  <p className="text-xl font-bold text-[#241814]">
+                    Rs. {subtotal}
+                  </p>
+                </div>
+
+                <button
+                  onClick={toggleDiscount}
+                  disabled={isBusy || cart.length === 0}
+                  className={`w-full rounded-2xl border py-3 font-bold ${
+                    discountApplied
+                      ? "bg-[#ffe5f1] border-[#d81b72] text-[#a10d52]"
+                      : "bg-white border-[#ead8c2] text-[#241814]"
+                  } ${
+                    isBusy || cart.length === 0
+                      ? "opacity-60 cursor-not-allowed"
+                      : ""
+                  }`}
+                >
+                  {discountApplied
+                    ? "Remove 20% Loyalty Discount"
+                    : "Apply 20% Loyalty Discount"}
+                </button>
+
+                {discountApplied && (
+                  <div className="flex items-center justify-between rounded-2xl bg-[#ffe5f1] px-4 py-3">
+                    <p className="text-[#a10d52] font-bold">Discount 20%</p>
+                    <p className="text-[#a10d52] font-bold">
+                      - Rs. {discountAmount}
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between border-t border-[#ead8c2] pt-4">
+                  <p className="text-[#7b5b4f] font-bold">Total</p>
+                  <p className="text-3xl font-bold text-[#241814]">
+                    Rs. {total}
+                  </p>
+                </div>
               </div>
 
               <div className="mt-5">
