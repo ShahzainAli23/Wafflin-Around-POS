@@ -21,6 +21,7 @@ type Order = {
   total: number;
   payment_method: "cash" | "nayapay" | "meezan";
   created_at: string;
+  status: "active" | "completed" | "cancelled" | string;
 };
 
 type OrderItem = {
@@ -205,6 +206,30 @@ export default function AdminPage() {
     }
   }
 
+  const revenueOrders = useMemo(() => {
+    return orders.filter((order) => order.status !== "cancelled");
+  }, [orders]);
+
+  const cancelledOrders = useMemo(() => {
+    return orders.filter((order) => order.status === "cancelled");
+  }, [orders]);
+
+  const revenueOrderIds = useMemo(() => {
+    return new Set(revenueOrders.map((order) => order.id));
+  }, [revenueOrders]);
+
+  const revenueOrderItems = useMemo(() => {
+    return orderItems.filter((item) => revenueOrderIds.has(item.order_id));
+  }, [orderItems, revenueOrderIds]);
+
+  const revenueItemIds = useMemo(() => {
+    return new Set(revenueOrderItems.map((item) => item.id));
+  }, [revenueOrderItems]);
+
+  const revenueItemOptions = useMemo(() => {
+    return itemOptions.filter((option) => revenueItemIds.has(option.order_item_id));
+  }, [itemOptions, revenueItemIds]);
+
   const optionsByItemId = useMemo(() => {
     const map = new Map<string, OrderItemOption[]>();
 
@@ -216,6 +241,18 @@ export default function AdminPage() {
 
     return map;
   }, [itemOptions]);
+
+  const revenueOptionsByItemId = useMemo(() => {
+    const map = new Map<string, OrderItemOption[]>();
+
+    revenueItemOptions.forEach((option) => {
+      const existing = map.get(option.order_item_id) || [];
+      existing.push(option);
+      map.set(option.order_item_id, existing);
+    });
+
+    return map;
+  }, [revenueItemOptions]);
 
   const itemsByOrderId = useMemo(() => {
     const map = new Map<string, OrderItem[]>();
@@ -229,8 +266,11 @@ export default function AdminPage() {
     return map;
   }, [orderItems]);
 
-  function getItemDisplayName(item: OrderItem) {
-    const options = optionsByItemId.get(item.id) || [];
+  function getItemDisplayName(
+    item: OrderItem,
+    mapToUse: Map<string, OrderItemOption[]> = optionsByItemId
+  ) {
+    const options = mapToUse.get(item.id) || [];
     const flavorNames = options
       .filter((o) => o.option_group === "Ice Cream Flavor")
       .map((o) => o.option_name);
@@ -243,26 +283,30 @@ export default function AdminPage() {
   }
 
   const totalSales = useMemo(() => {
-    return orders.reduce((sum, order) => sum + Number(order.total), 0);
-  }, [orders]);
+    return revenueOrders.reduce((sum, order) => sum + Number(order.total), 0);
+  }, [revenueOrders]);
+
+  const cancelledValue = useMemo(() => {
+    return cancelledOrders.reduce((sum, order) => sum + Number(order.total), 0);
+  }, [cancelledOrders]);
 
   const avgOrder = useMemo(() => {
-    return orders.length ? Math.round(totalSales / orders.length) : 0;
-  }, [orders, totalSales]);
+    return revenueOrders.length ? Math.round(totalSales / revenueOrders.length) : 0;
+  }, [revenueOrders, totalSales]);
 
   const paymentTotals = useMemo(() => {
     return {
-      cash: orders
+      cash: revenueOrders
         .filter((o) => o.payment_method === "cash")
         .reduce((sum, o) => sum + Number(o.total), 0),
-      nayapay: orders
+      nayapay: revenueOrders
         .filter((o) => o.payment_method === "nayapay")
         .reduce((sum, o) => sum + Number(o.total), 0),
-      meezan: orders
+      meezan: revenueOrders
         .filter((o) => o.payment_method === "meezan")
         .reduce((sum, o) => sum + Number(o.total), 0),
     };
-  }, [orders]);
+  }, [revenueOrders]);
 
   const paymentChartData = [
     { name: "Cash", value: paymentTotals.cash, color: donutColors[0] },
@@ -277,7 +321,7 @@ export default function AdminPage() {
         sales: 0,
       }));
 
-      orders.forEach((order) => {
+      revenueOrders.forEach((order) => {
         const hour = new Date(order.created_at).getHours();
         buckets[hour].sales += Number(order.total);
       });
@@ -287,7 +331,7 @@ export default function AdminPage() {
 
     const map = new Map<string, number>();
 
-    orders.forEach((order) => {
+    revenueOrders.forEach((order) => {
       const d = new Date(order.created_at);
       const key = d.toISOString().slice(0, 10);
       map.set(key, (map.get(key) || 0) + Number(order.total));
@@ -302,13 +346,13 @@ export default function AdminPage() {
         }),
         sales,
       }));
-  }, [orders, rangeMode]);
+  }, [revenueOrders, rangeMode]);
 
   const topItems = useMemo(() => {
     const map = new Map<string, number>();
 
-    orderItems.forEach((item) => {
-      const label = getItemDisplayName(item);
+    revenueOrderItems.forEach((item) => {
+      const label = getItemDisplayName(item, revenueOptionsByItemId);
       map.set(label, (map.get(label) || 0) + item.quantity);
     });
 
@@ -316,12 +360,12 @@ export default function AdminPage() {
       .map(([name, qty]) => ({ name, qty }))
       .sort((a, b) => b.qty - a.qty)
       .slice(0, 6);
-  }, [orderItems, optionsByItemId]);
+  }, [revenueOrderItems, revenueOptionsByItemId]);
 
   const topAddons = useMemo(() => {
     const map = new Map<string, number>();
 
-    itemOptions
+    revenueItemOptions
       .filter((item) => item.option_group === "Add-on")
       .forEach((item) => {
         map.set(item.option_name, (map.get(item.option_name) || 0) + 1);
@@ -331,7 +375,7 @@ export default function AdminPage() {
       .map(([name, qty]) => ({ name, qty }))
       .sort((a, b) => b.qty - a.qty)
       .slice(0, 6);
-  }, [itemOptions]);
+  }, [revenueItemOptions]);
 
   const selectedOrderItems = useMemo(() => {
     if (!selectedOrder) return [];
@@ -380,11 +424,26 @@ export default function AdminPage() {
               </button>
             </div>
 
-            <div className="grid md:grid-cols-3 gap-4 mt-6">
+            <div className="grid md:grid-cols-4 gap-4 mt-6">
               <div className="rounded-2xl bg-white/5 p-4">
                 <p className="text-white/55">Payment</p>
                 <p className="text-xl font-bold mt-2 capitalize">
                   {selectedOrder.payment_method}
+                </p>
+              </div>
+
+              <div className="rounded-2xl bg-white/5 p-4">
+                <p className="text-white/55">Status</p>
+                <p
+                  className={`text-xl font-bold mt-2 capitalize ${
+                    selectedOrder.status === "cancelled"
+                      ? "text-red-300"
+                      : selectedOrder.status === "completed"
+                      ? "text-green-300"
+                      : "text-[#d81b72]"
+                  }`}
+                >
+                  {selectedOrder.status}
                 </p>
               </div>
 
@@ -402,6 +461,12 @@ export default function AdminPage() {
                 </p>
               </div>
             </div>
+
+            {selectedOrder.status === "cancelled" && (
+              <div className="mt-5 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-red-200 font-bold">
+                This order was cancelled and is not counted in revenue.
+              </div>
+            )}
 
             <div className="mt-6 space-y-4">
               {selectedOrderItems.length === 0 ? (
@@ -459,16 +524,24 @@ export default function AdminPage() {
       <div className="max-w-[1600px] mx-auto">
         <div className="rounded-[30px] border border-white/10 bg-[#151922] p-5 lg:p-6 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div>
-              <p className="text-sm uppercase tracking-[0.25em] text-[#d81b72]">
-                Wafflin' Around
-              </p>
-              <h1 className="text-3xl lg:text-4xl font-bold mt-2">
-                Admin Dashboard
-              </h1>
-              <p className="text-white/60 mt-2">
-                Pick a date and report range
-              </p>
+            <div className="flex items-center gap-4">
+              <img
+                src="/logo.png"
+                alt="Wafflin' Around"
+                className="h-14 w-14 object-contain rounded-2xl"
+              />
+
+              <div>
+                <p className="text-sm uppercase tracking-[0.25em] text-[#d81b72]">
+                  Wafflin' Around
+                </p>
+                <h1 className="text-3xl lg:text-4xl font-bold mt-2">
+                  Admin Dashboard
+                </h1>
+                <p className="text-white/60 mt-2">
+                  Revenue excludes cancelled orders
+                </p>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -522,15 +595,15 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <section className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mt-5">
+        <section className="grid md:grid-cols-2 xl:grid-cols-5 gap-4 mt-5">
           <div className="rounded-[28px] bg-[linear-gradient(135deg,#d81b72,#a10d52)] p-5 shadow-[0_15px_35px_rgba(216,27,114,0.28)]">
             <p className="text-white/80">Total Sales</p>
             <h2 className="text-4xl font-bold mt-3">{money(totalSales)}</h2>
           </div>
 
           <div className="rounded-[28px] bg-[#151922] border border-white/10 p-5">
-            <p className="text-white/60">Orders</p>
-            <h2 className="text-4xl font-bold mt-3">{orders.length}</h2>
+            <p className="text-white/60">Revenue Orders</p>
+            <h2 className="text-4xl font-bold mt-3">{revenueOrders.length}</h2>
           </div>
 
           <div className="rounded-[28px] bg-[#151922] border border-white/10 p-5">
@@ -548,6 +621,16 @@ export default function AdminPage() {
                 ).name
               }
             </h2>
+          </div>
+
+          <div className="rounded-[28px] bg-red-500/10 border border-red-500/25 p-5">
+            <p className="text-red-200">Cancelled</p>
+            <h2 className="text-4xl font-bold mt-3 text-red-100">
+              {cancelledOrders.length}
+            </h2>
+            <p className="text-red-200 mt-2 font-bold">
+              {money(cancelledValue)}
+            </p>
           </div>
         </section>
 
@@ -692,7 +775,9 @@ export default function AdminPage() {
           <div className="rounded-[30px] bg-[#151922] border border-white/10 p-5">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-2xl font-bold">Top Items</h2>
-              <p className="text-white/50 text-sm">Most ordered</p>
+              <p className="text-white/50 text-sm">
+                Excludes cancelled orders
+              </p>
             </div>
 
             <div className="space-y-3">
@@ -735,12 +820,27 @@ export default function AdminPage() {
                   <button
                     key={order.id}
                     onClick={() => setSelectedOrder(order)}
-                    className="w-full rounded-2xl bg-white/5 px-4 py-3 flex items-center justify-between text-left hover:bg-white/8 transition"
+                    className={`w-full rounded-2xl px-4 py-3 flex items-center justify-between text-left transition ${
+                      order.status === "cancelled"
+                        ? "bg-red-500/10 border border-red-500/20 hover:bg-red-500/15"
+                        : "bg-white/5 hover:bg-white/8"
+                    }`}
                   >
                     <div>
                       <p className="font-bold">Order #{order.order_no}</p>
                       <p className="text-white/55 text-sm">
                         {new Date(order.created_at).toLocaleString()}
+                      </p>
+                      <p
+                        className={`text-sm mt-1 capitalize font-bold ${
+                          order.status === "cancelled"
+                            ? "text-red-300"
+                            : order.status === "completed"
+                            ? "text-green-300"
+                            : "text-[#d81b72]"
+                        }`}
+                      >
+                        {order.status}
                       </p>
                     </div>
 
@@ -782,6 +882,11 @@ export default function AdminPage() {
                     {audit.details?.paymentMethod ? (
                       <p className="text-white/70 text-sm mt-1">
                         Payment: {audit.details.paymentMethod}
+                      </p>
+                    ) : null}
+                    {audit.details?.status ? (
+                      <p className="text-white/70 text-sm mt-1 capitalize">
+                        Status: {audit.details.status}
                       </p>
                     ) : null}
                   </div>

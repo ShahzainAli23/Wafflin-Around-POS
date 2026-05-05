@@ -29,6 +29,31 @@ type CartItem = {
   lineTotal: number;
 };
 
+type ActiveOrder = {
+  id: string;
+  order_no: number;
+  total: number;
+  payment_method: "cash" | "nayapay" | "meezan";
+  created_at: string;
+  status: string;
+};
+
+type ActiveOrderItem = {
+  id: string;
+  order_id: string;
+  product_name: string;
+  quantity: number;
+  line_total: number;
+};
+
+type ActiveOrderItemOption = {
+  id: string;
+  order_item_id: string;
+  option_name: string;
+  option_group: string;
+  price: number;
+};
+
 type Screen =
   | "root"
   | "drinks-root"
@@ -121,6 +146,15 @@ export default function POSPage() {
   const [notice, setNotice] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const [isUpdatingOrder, setIsUpdatingOrder] = useState(false);
+
+  const [activeOrders, setActiveOrders] = useState<ActiveOrder[]>([]);
+  const [activeOrderItems, setActiveOrderItems] = useState<ActiveOrderItem[]>(
+    []
+  );
+  const [activeOrderItemOptions, setActiveOrderItemOptions] = useState<
+    ActiveOrderItemOption[]
+  >([]);
 
   const [selectedShakeSize, setSelectedShakeSize] =
     useState<string>("Standard");
@@ -189,17 +223,159 @@ export default function POSPage() {
 
     setProducts((productData || []) as Product[]);
     setOptions((optionData || []) as Option[]);
+
+    await loadActiveOrders(user.id);
+
     setIsLoading(false);
   }
 
+  async function loadActiveOrders(userId?: string) {
+    let workerId = userId;
+
+    if (!workerId) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) return;
+      workerId = user.id;
+    }
+
+    const { data: orderData, error: orderError } = await supabase
+      .from("orders")
+      .select("id, order_no, total, payment_method, created_at, status")
+      .eq("worker_id", workerId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false });
+
+    if (orderError) {
+      setNotice("Could not load active orders");
+      return;
+    }
+
+    const safeOrders = (orderData || []) as ActiveOrder[];
+    setActiveOrders(safeOrders);
+
+    const orderIds = safeOrders.map((order) => order.id);
+
+    if (orderIds.length === 0) {
+      setActiveOrderItems([]);
+      setActiveOrderItemOptions([]);
+      return;
+    }
+
+    const { data: itemData, error: itemError } = await supabase
+      .from("order_items")
+      .select("id, order_id, product_name, quantity, line_total")
+      .in("order_id", orderIds);
+
+    if (itemError) {
+      setActiveOrderItems([]);
+      setActiveOrderItemOptions([]);
+      return;
+    }
+
+    const safeItems = (itemData || []) as ActiveOrderItem[];
+    setActiveOrderItems(safeItems);
+
+    const itemIds = safeItems.map((item) => item.id);
+
+    if (itemIds.length === 0) {
+      setActiveOrderItemOptions([]);
+      return;
+    }
+
+    const { data: optionData, error: optionError } = await supabase
+      .from("order_item_options")
+      .select("id, order_item_id, option_name, option_group, price")
+      .in("order_item_id", itemIds);
+
+    if (optionError) {
+      setActiveOrderItemOptions([]);
+      return;
+    }
+
+    setActiveOrderItemOptions((optionData || []) as ActiveOrderItemOption[]);
+  }
+
+  const activeItemsByOrderId = useMemo(() => {
+    const map = new Map<string, ActiveOrderItem[]>();
+
+    activeOrderItems.forEach((item) => {
+      const existing = map.get(item.order_id) || [];
+      existing.push(item);
+      map.set(item.order_id, existing);
+    });
+
+    return map;
+  }, [activeOrderItems]);
+
+  const activeOptionsByItemId = useMemo(() => {
+    const map = new Map<string, ActiveOrderItemOption[]>();
+
+    activeOrderItemOptions.forEach((option) => {
+      const existing = map.get(option.order_item_id) || [];
+      existing.push(option);
+      map.set(option.order_item_id, existing);
+    });
+
+    return map;
+  }, [activeOrderItemOptions]);
+
+  async function updateOrderStatus(
+    orderId: string,
+    status: "completed" | "cancelled"
+  ) {
+    if (isUpdatingOrder || isCheckingOut) return;
+
+    setIsUpdatingOrder(true);
+    setNotice(status === "completed" ? "Completing order..." : "Cancelling order...");
+
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const { error } = await supabase
+        .from("orders")
+        .update({ status })
+        .eq("id", orderId)
+        .eq("worker_id", user.id);
+
+      if (error) {
+        setNotice("Could not update order");
+        return;
+      }
+
+      await supabase.from("audit_logs").insert({
+        user_id: user.id,
+        action: status === "completed" ? "ORDER_COMPLETED" : "ORDER_CANCELLED",
+        details: {
+          orderId,
+          status,
+        },
+      });
+
+      await loadActiveOrders(user.id);
+      setNotice(status === "completed" ? "Order completed" : "Order cancelled");
+    } finally {
+      setIsUpdatingOrder(false);
+    }
+  }
+
   function navigate(next: Screen) {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
     setHistory((prev) => [...prev, screen]);
     setScreen(next);
   }
 
   function goBack() {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
     if (history.length === 0) return;
 
     const nextHistory = [...history];
@@ -210,7 +386,7 @@ export default function POSPage() {
   }
 
   function goHome() {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
     setHistory([]);
     setScreen("root");
   }
@@ -285,7 +461,7 @@ export default function POSPage() {
   }, [addOns]);
 
   function addToCart(item: CartItem) {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
 
     setCart((prev) => [...prev, item]);
     setNotice("Item added to cart");
@@ -313,7 +489,7 @@ export default function POSPage() {
     option: Option,
     setter: (value: Option[]) => void
   ) {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
 
     if (current.some((o) => o.id === option.id)) {
       setter(current.filter((o) => o.id !== option.id));
@@ -323,7 +499,7 @@ export default function POSPage() {
   }
 
   function confirmBuildWaffle() {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
 
     if (!buildProduct || !buildSauce || !buildTopping) {
       setNotice("Select sauce and topping first");
@@ -349,7 +525,7 @@ export default function POSPage() {
   }
 
   function toggleIceCreamFlavor(id: string) {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
     if (!iceCreamProduct) return;
 
     const maxFlavors = scoopCountMap[iceCreamProduct.size || "1 Scoop"] || 1;
@@ -368,7 +544,7 @@ export default function POSPage() {
   }
 
   function confirmIceCream() {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
 
     if (!iceCreamProduct) {
       setNotice("Choose ice cream size first");
@@ -405,7 +581,7 @@ export default function POSPage() {
   }
 
   function removeItem(index: number) {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
     setCart((prev) => prev.filter((_, i) => i !== index));
   }
 
@@ -414,7 +590,7 @@ export default function POSPage() {
   }, [cart]);
 
   async function checkout() {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
 
     if (cart.length === 0) {
       setNotice("Cart is empty");
@@ -446,6 +622,7 @@ export default function POSPage() {
           discount: 0,
           total: currentTotal,
           payment_method: currentPaymentMethod,
+          status: "active",
         })
         .select()
         .single();
@@ -501,6 +678,7 @@ export default function POSPage() {
           total: currentTotal,
           paymentMethod: currentPaymentMethod,
           items: currentCart.length,
+          status: "active",
         },
       });
 
@@ -508,14 +686,15 @@ export default function POSPage() {
       setPaymentMethod("cash");
       setHistory([]);
       setScreen("root");
-      setNotice("Order complete");
+      await loadActiveOrders(user.id);
+      setNotice("Order added to active orders");
     } finally {
       setIsCheckingOut(false);
     }
   }
 
   async function logout() {
-    if (isCheckingOut) return;
+    if (isCheckingOut || isUpdatingOrder) return;
 
     await supabase.auth.signOut();
     router.push("/login");
@@ -537,19 +716,19 @@ export default function POSPage() {
           <ChoiceCard
             title="Drinks"
             subtitle="Coffee and shakes"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("drinks-root")}
           />
           <ChoiceCard
             title="Waffles"
             subtitle="Build or Kit Kat"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("waffles-root")}
           />
           <ChoiceCard
             title="Ice Cream"
             subtitle="1, 2 or 3 scoops"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("icecream-size")}
           />
         </div>
@@ -562,13 +741,13 @@ export default function POSPage() {
           <ChoiceCard
             title="Coffee"
             subtitle="Hot or cold"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("coffee-temp")}
           />
           <ChoiceCard
             title="Ice Cream Shakes"
             subtitle="Regular or large"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("shake-size")}
           />
         </div>
@@ -581,13 +760,13 @@ export default function POSPage() {
           <ChoiceCard
             title="Hot"
             subtitle="All hot coffees"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("coffee-hot")}
           />
           <ChoiceCard
             title="Cold"
             subtitle="All cold coffees"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("coffee-cold")}
           />
         </div>
@@ -603,7 +782,7 @@ export default function POSPage() {
               title={product.name}
               subtitle="Hot"
               price={Number(product.price)}
-              disabled={isCheckingOut}
+              disabled={isCheckingOut || isUpdatingOrder}
               onClick={() => addSimpleProduct(product, product.name, "Hot")}
             />
           ))}
@@ -620,7 +799,7 @@ export default function POSPage() {
               title={product.name}
               subtitle="Cold"
               price={Number(product.price)}
-              disabled={isCheckingOut}
+              disabled={isCheckingOut || isUpdatingOrder}
               onClick={() => addSimpleProduct(product, product.name, "Cold")}
             />
           ))}
@@ -634,7 +813,7 @@ export default function POSPage() {
           <ChoiceCard
             title="Regular"
             subtitle="Standard size"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => {
               setSelectedShakeSize("Standard");
               navigate("shake-flavor");
@@ -643,7 +822,7 @@ export default function POSPage() {
           <ChoiceCard
             title="Large"
             subtitle="Large size"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => {
               setSelectedShakeSize("Large");
               navigate("shake-flavor");
@@ -662,7 +841,7 @@ export default function POSPage() {
               title={product.name.replace(" Shake", "")}
               subtitle={formatShakeSize(product.size)}
               price={Number(product.price)}
-              disabled={isCheckingOut}
+              disabled={isCheckingOut || isUpdatingOrder}
               onClick={() =>
                 addSimpleProduct(
                   product,
@@ -682,7 +861,7 @@ export default function POSPage() {
           <ChoiceCard
             title="Build a Waffle"
             subtitle="Pick size, sauce, topping and add-ons"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => {
               resetBuildFlow();
               navigate("build-size");
@@ -691,7 +870,7 @@ export default function POSPage() {
           <ChoiceCard
             title="Kit Kat Waffle"
             subtitle="Choose size"
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("kitkat-size")}
           />
         </div>
@@ -707,7 +886,7 @@ export default function POSPage() {
               title={formatWaffleSize(product.size)}
               subtitle="Kit Kat Waffle"
               price={Number(product.price)}
-              disabled={isCheckingOut}
+              disabled={isCheckingOut || isUpdatingOrder}
               onClick={() =>
                 addSimpleProduct(
                   product,
@@ -730,7 +909,7 @@ export default function POSPage() {
               title={formatWaffleSize(product.size)}
               subtitle="Build a Waffle"
               price={Number(product.price)}
-              disabled={isCheckingOut}
+              disabled={isCheckingOut || isUpdatingOrder}
               onClick={() => {
                 setBuildProduct(product);
                 navigate("build-sauce");
@@ -750,13 +929,17 @@ export default function POSPage() {
             {freeSauces.map((option) => (
               <button
                 key={option.id}
-                disabled={isCheckingOut}
+                disabled={isCheckingOut || isUpdatingOrder}
                 onClick={() => setBuildSauce(option)}
                 className={`rounded-[22px] border p-5 text-left ${
                   buildSauce?.id === option.id
                     ? "bg-[#d81b72] text-white border-[#d81b72]"
                     : "bg-[#fff9f1] text-[#241814] border-[#ead8c2]"
-                } ${isCheckingOut ? "opacity-60 cursor-not-allowed" : ""}`}
+                } ${
+                  isCheckingOut || isUpdatingOrder
+                    ? "opacity-60 cursor-not-allowed"
+                    : ""
+                }`}
               >
                 <p className="font-bold text-lg">{option.name}</p>
               </button>
@@ -764,10 +947,10 @@ export default function POSPage() {
           </div>
 
           <button
-            disabled={!buildSauce || isCheckingOut}
+            disabled={!buildSauce || isCheckingOut || isUpdatingOrder}
             onClick={() => buildSauce && navigate("build-topping")}
             className={`rounded-2xl px-5 py-3 font-bold ${
-              !buildSauce || isCheckingOut
+              !buildSauce || isCheckingOut || isUpdatingOrder
                 ? "bg-[#9d8a82] text-white cursor-not-allowed"
                 : "bg-[#241814] text-white"
             }`}
@@ -787,13 +970,17 @@ export default function POSPage() {
             {freeToppings.map((option) => (
               <button
                 key={option.id}
-                disabled={isCheckingOut}
+                disabled={isCheckingOut || isUpdatingOrder}
                 onClick={() => setBuildTopping(option)}
                 className={`rounded-[22px] border p-5 text-left ${
                   buildTopping?.id === option.id
                     ? "bg-[#d81b72] text-white border-[#d81b72]"
                     : "bg-[#fff9f1] text-[#241814] border-[#ead8c2]"
-                } ${isCheckingOut ? "opacity-60 cursor-not-allowed" : ""}`}
+                } ${
+                  isCheckingOut || isUpdatingOrder
+                    ? "opacity-60 cursor-not-allowed"
+                    : ""
+                }`}
               >
                 <p className="font-bold text-lg">{option.name}</p>
               </button>
@@ -801,10 +988,10 @@ export default function POSPage() {
           </div>
 
           <button
-            disabled={!buildTopping || isCheckingOut}
+            disabled={!buildTopping || isCheckingOut || isUpdatingOrder}
             onClick={() => buildTopping && navigate("build-addons")}
             className={`rounded-2xl px-5 py-3 font-bold ${
-              !buildTopping || isCheckingOut
+              !buildTopping || isCheckingOut || isUpdatingOrder
                 ? "bg-[#9d8a82] text-white cursor-not-allowed"
                 : "bg-[#241814] text-white"
             }`}
@@ -827,7 +1014,7 @@ export default function POSPage() {
               return (
                 <button
                   key={option.id}
-                  disabled={isCheckingOut}
+                  disabled={isCheckingOut || isUpdatingOrder}
                   onClick={() =>
                     toggleOption(buildAddons, option, setBuildAddons)
                   }
@@ -835,7 +1022,11 @@ export default function POSPage() {
                     active
                       ? "bg-[#d81b72] text-white border-[#d81b72]"
                       : "bg-[#fff9f1] text-[#241814] border-[#ead8c2]"
-                  } ${isCheckingOut ? "opacity-60 cursor-not-allowed" : ""}`}
+                  } ${
+                    isCheckingOut || isUpdatingOrder
+                      ? "opacity-60 cursor-not-allowed"
+                      : ""
+                  }`}
                 >
                   <p className="font-bold text-lg">{option.name}</p>
                   <p
@@ -851,10 +1042,10 @@ export default function POSPage() {
           </div>
 
           <button
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={confirmBuildWaffle}
             className={`rounded-2xl px-5 py-3 font-bold shadow-[0_10px_25px_rgba(216,27,114,0.35)] ${
-              isCheckingOut
+              isCheckingOut || isUpdatingOrder
                 ? "bg-[#9d8a82] text-white cursor-not-allowed"
                 : "bg-[#d81b72] text-white"
             }`}
@@ -874,7 +1065,7 @@ export default function POSPage() {
               title={product.size || ""}
               subtitle="Ice Cream"
               price={Number(product.price)}
-              disabled={isCheckingOut}
+              disabled={isCheckingOut || isUpdatingOrder}
               onClick={() => {
                 resetIceCreamFlow();
                 setIceCreamProduct(product);
@@ -904,13 +1095,17 @@ export default function POSPage() {
               return (
                 <button
                   key={option.id}
-                  disabled={isCheckingOut}
+                  disabled={isCheckingOut || isUpdatingOrder}
                   onClick={() => toggleIceCreamFlavor(option.id)}
                   className={`rounded-[22px] border p-5 text-left ${
                     active
                       ? "bg-[#d81b72] text-white border-[#d81b72]"
                       : "bg-[#fff9f1] text-[#241814] border-[#ead8c2]"
-                  } ${isCheckingOut ? "opacity-60 cursor-not-allowed" : ""}`}
+                  } ${
+                    isCheckingOut || isUpdatingOrder
+                      ? "opacity-60 cursor-not-allowed"
+                      : ""
+                  }`}
                 >
                   <p className="font-bold text-lg">{option.name}</p>
                 </button>
@@ -919,14 +1114,20 @@ export default function POSPage() {
           </div>
 
           <button
-            disabled={iceCreamFlavorIds.length !== maxFlavors || isCheckingOut}
+            disabled={
+              iceCreamFlavorIds.length !== maxFlavors ||
+              isCheckingOut ||
+              isUpdatingOrder
+            }
             onClick={() => {
               if (iceCreamFlavorIds.length === maxFlavors) {
                 navigate("icecream-addons");
               }
             }}
             className={`rounded-2xl px-5 py-3 font-bold ${
-              iceCreamFlavorIds.length !== maxFlavors || isCheckingOut
+              iceCreamFlavorIds.length !== maxFlavors ||
+              isCheckingOut ||
+              isUpdatingOrder
                 ? "bg-[#9d8a82] text-white cursor-not-allowed"
                 : "bg-[#241814] text-white"
             }`}
@@ -949,7 +1150,7 @@ export default function POSPage() {
               return (
                 <button
                   key={option.id}
-                  disabled={isCheckingOut}
+                  disabled={isCheckingOut || isUpdatingOrder}
                   onClick={() =>
                     toggleOption(iceCreamAddons, option, setIceCreamAddons)
                   }
@@ -957,7 +1158,11 @@ export default function POSPage() {
                     active
                       ? "bg-[#d81b72] text-white border-[#d81b72]"
                       : "bg-[#fff9f1] text-[#241814] border-[#ead8c2]"
-                  } ${isCheckingOut ? "opacity-60 cursor-not-allowed" : ""}`}
+                  } ${
+                    isCheckingOut || isUpdatingOrder
+                      ? "opacity-60 cursor-not-allowed"
+                      : ""
+                  }`}
                 >
                   <p className="font-bold text-lg">{option.name}</p>
                   <p
@@ -973,10 +1178,10 @@ export default function POSPage() {
           </div>
 
           <button
-            disabled={isCheckingOut}
+            disabled={isCheckingOut || isUpdatingOrder}
             onClick={confirmIceCream}
             className={`rounded-2xl px-5 py-3 font-bold shadow-[0_10px_25px_rgba(216,27,114,0.35)] ${
-              isCheckingOut
+              isCheckingOut || isUpdatingOrder
                 ? "bg-[#9d8a82] text-white cursor-not-allowed"
                 : "bg-[#d81b72] text-white"
             }`}
@@ -1010,16 +1215,18 @@ export default function POSPage() {
       "icecream-addons": "Ice Cream - Add-ons",
     }[screen] || "Worker POS";
 
+  const isBusy = isCheckingOut || isUpdatingOrder;
+
   return (
     <main className="min-h-screen bg-[#f7eedf] p-4 lg:p-6">
-      {isCheckingOut && (
+      {isBusy && (
         <div className="fixed inset-0 z-50 bg-black/35 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="rounded-[28px] bg-[#fff9f1] border border-[#ead8c2] p-7 shadow-[0_20px_60px_rgba(0,0,0,0.25)] text-center">
             <span className="mx-auto block h-8 w-8 rounded-full bg-[#d81b72] animate-pulse" />
             <h2 className="mt-4 text-2xl font-bold text-[#241814]">
-              Processing order
+              {isCheckingOut ? "Processing order" : "Updating order"}
             </h2>
-            <p className="mt-2 text-[#7b5b4f]">Please wait. Do not press again.</p>
+            <p className="mt-2 text-[#7b5b4f]">Please wait.</p>
           </div>
         </div>
       )}
@@ -1027,12 +1234,18 @@ export default function POSPage() {
       <div className="max-w-[1600px] mx-auto">
         <div className="rounded-[30px] border border-[#ead8c2] bg-[#fff9f1] px-5 py-4 shadow-[0_15px_40px_rgba(0,0,0,0.08)] flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
+            <img
+              src="/logo.png"
+              alt="Wafflin' Around"
+              className="h-12 w-12 object-contain rounded-2xl"
+            />
+
             {screen !== "root" ? (
               <button
                 onClick={goBack}
-                disabled={isCheckingOut}
+                disabled={isBusy}
                 className={`rounded-2xl px-4 py-2 font-bold ${
-                  isCheckingOut
+                  isBusy
                     ? "bg-[#9d8a82] text-white cursor-not-allowed"
                     : "bg-[#241814] text-white"
                 }`}
@@ -1043,9 +1256,9 @@ export default function POSPage() {
 
             <button
               onClick={goHome}
-              disabled={isCheckingOut}
+              disabled={isBusy}
               className={`rounded-2xl border border-[#ead8c2] bg-white px-4 py-2 font-bold text-[#241814] ${
-                isCheckingOut ? "opacity-60 cursor-not-allowed" : ""
+                isBusy ? "opacity-60 cursor-not-allowed" : ""
               }`}
             >
               Home
@@ -1068,9 +1281,9 @@ export default function POSPage() {
 
             <button
               onClick={logout}
-              disabled={isCheckingOut}
+              disabled={isBusy}
               className={`rounded-2xl px-4 py-2 font-bold ${
-                isCheckingOut
+                isBusy
                   ? "bg-[#9d8a82] text-white cursor-not-allowed"
                   : "bg-[#d81b72] text-white"
               }`}
@@ -1081,9 +1294,227 @@ export default function POSPage() {
         </div>
 
         <div className="mt-5 grid xl:grid-cols-[1fr_380px] gap-5">
-          <section className="rounded-[30px] border border-[#ead8c2] bg-[#fef8ef] p-5 lg:p-6 shadow-[0_15px_35px_rgba(0,0,0,0.05)]">
-            {renderMainContent()}
-          </section>
+          <div className="space-y-5">
+            <section className="rounded-[30px] border border-[#ead8c2] bg-[#fef8ef] p-5 lg:p-6 shadow-[0_15px_35px_rgba(0,0,0,0.05)]">
+              {renderMainContent()}
+            </section>
+
+            <section className="rounded-[30px] border border-[#ead8c2] bg-[#fff9f1] p-5 lg:p-6 shadow-[0_15px_35px_rgba(0,0,0,0.05)]">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm text-[#8b6a5b]">Kitchen / Counter</p>
+                  <h2 className="text-2xl lg:text-3xl font-bold text-[#241814]">
+                    Active Orders
+                  </h2>
+                </div>
+
+                <button
+                  onClick={() => loadActiveOrders()}
+                  disabled={isBusy}
+                  className={`rounded-2xl px-4 py-2 font-bold ${
+                    isBusy
+                      ? "bg-[#9d8a82] text-white cursor-not-allowed"
+                      : "bg-[#241814] text-white"
+                  }`}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="mt-5">
+                {activeOrders.length === 0 ? (
+                  <div className="rounded-[24px] border border-dashed border-[#ead8c2] bg-[#fef8ef] p-6 text-center text-[#7b5b4f] font-bold">
+                    No active orders
+                  </div>
+                ) : (
+                  <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {activeOrders.map((order) => {
+                      const items = activeItemsByOrderId.get(order.id) || [];
+
+                      return (
+                        <div
+                          key={order.id}
+                          className="rounded-[26px] border border-[#ead8c2] bg-white p-5 shadow-[0_10px_25px_rgba(0,0,0,0.05)]"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm text-[#8b6a5b]">
+                                Order #{order.order_no}
+                              </p>
+                              <h3 className="text-2xl font-bold text-[#241814] mt-1">
+                                Rs. {order.total}
+                              </h3>
+                            </div>
+
+                            <span className="rounded-full bg-[#ffe5f1] text-[#a10d52] px-3 py-1 text-sm font-bold capitalize">
+                              {order.payment_method}
+                            </span>
+                          </div>
+
+                          <p className="text-sm text-[#7b5b4f] mt-2">
+                            {new Date(order.created_at).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </p>
+
+                          <div className="mt-4 space-y-3">
+                            {items.length === 0 ? (
+                              <p className="text-sm text-[#7b5b4f]">
+                                No items found
+                              </p>
+                            ) : (
+                              items.map((item) => {
+                                const itemOptions =
+                                  activeOptionsByItemId.get(item.id) || [];
+
+                                const sauceOptions = itemOptions.filter(
+                                  (option) =>
+                                    option.option_group === "Free Sauce"
+                                );
+
+                                const toppingOptions = itemOptions.filter(
+                                  (option) =>
+                                    option.option_group === "Free Topping"
+                                );
+
+                                const addonOptions = itemOptions.filter(
+                                  (option) => option.option_group === "Add-on"
+                                );
+
+                                const flavorOptions = itemOptions.filter(
+                                  (option) =>
+                                    option.option_group === "Ice Cream Flavor"
+                                );
+
+                                return (
+                                  <div
+                                    key={item.id}
+                                    className="rounded-2xl bg-[#f7eedf] px-4 py-3 border border-[#ead8c2]"
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <p className="font-bold text-[#241814] text-lg">
+                                          {item.product_name}
+                                        </p>
+                                        <p className="text-sm text-[#7b5b4f]">
+                                          Qty {item.quantity} | Rs.{" "}
+                                          {item.line_total}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    {flavorOptions.length > 0 && (
+                                      <div className="mt-3 rounded-xl bg-white px-3 py-2">
+                                        <p className="text-xs font-bold text-[#8b4b39] uppercase">
+                                          Ice Cream Flavor
+                                        </p>
+                                        <p className="font-bold text-[#241814] mt-1">
+                                          {flavorOptions
+                                            .map(
+                                              (option) => option.option_name
+                                            )
+                                            .join(" + ")}
+                                        </p>
+                                      </div>
+                                    )}
+
+                                    {sauceOptions.length > 0 && (
+                                      <div className="mt-3 rounded-xl bg-white px-3 py-2">
+                                        <p className="text-xs font-bold text-[#8b4b39] uppercase">
+                                          Sauce
+                                        </p>
+                                        <p className="font-bold text-[#241814] mt-1">
+                                          {sauceOptions
+                                            .map(
+                                              (option) => option.option_name
+                                            )
+                                            .join(", ")}
+                                        </p>
+                                      </div>
+                                    )}
+
+                                    {toppingOptions.length > 0 && (
+                                      <div className="mt-3 rounded-xl bg-white px-3 py-2">
+                                        <p className="text-xs font-bold text-[#8b4b39] uppercase">
+                                          Topping
+                                        </p>
+                                        <p className="font-bold text-[#241814] mt-1">
+                                          {toppingOptions
+                                            .map(
+                                              (option) => option.option_name
+                                            )
+                                            .join(", ")}
+                                        </p>
+                                      </div>
+                                    )}
+
+                                    {addonOptions.length > 0 && (
+                                      <div className="mt-3 rounded-xl bg-white px-3 py-2">
+                                        <p className="text-xs font-bold text-[#8b4b39] uppercase">
+                                          Add-ons
+                                        </p>
+
+                                        <div className="mt-1 space-y-1">
+                                          {addonOptions.map((option) => (
+                                            <p
+                                              key={option.id}
+                                              className="font-bold text-[#241814]"
+                                            >
+                                              {option.option_name}
+                                              {Number(option.price) > 0
+                                                ? ` + Rs. ${option.price}`
+                                                : ""}
+                                            </p>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {itemOptions.length === 0 && (
+                                      <p className="mt-3 text-sm text-[#7b5b4f]">
+                                        No customization
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 mt-5">
+                            <button
+                              disabled={isBusy}
+                              onClick={() =>
+                                updateOrderStatus(order.id, "cancelled")
+                              }
+                              className={`rounded-2xl border border-red-200 bg-red-50 py-3 font-bold text-red-700 ${
+                                isBusy ? "opacity-60 cursor-not-allowed" : ""
+                              }`}
+                            >
+                              Cancel
+                            </button>
+
+                            <button
+                              disabled={isBusy}
+                              onClick={() =>
+                                updateOrderStatus(order.id, "completed")
+                              }
+                              className={`rounded-2xl bg-[#d81b72] py-3 font-bold text-white ${
+                                isBusy ? "opacity-60 cursor-not-allowed" : ""
+                              }`}
+                            >
+                              Complete
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
 
           <aside className="rounded-[30px] border border-[#ead8c2] bg-[#fff9f1] p-5 shadow-[0_15px_35px_rgba(0,0,0,0.06)] h-fit xl:sticky xl:top-6">
             <div className="flex items-center justify-between">
@@ -1114,9 +1545,9 @@ export default function POSPage() {
 
                       <button
                         onClick={() => removeItem(index)}
-                        disabled={isCheckingOut}
+                        disabled={isBusy}
                         className={`rounded-xl border border-[#f4d6df] bg-[#fff2f7] px-3 py-1.5 text-sm font-bold text-[#a10d52] ${
-                          isCheckingOut ? "opacity-60 cursor-not-allowed" : ""
+                          isBusy ? "opacity-60 cursor-not-allowed" : ""
                         }`}
                       >
                         Remove
@@ -1162,15 +1593,13 @@ export default function POSPage() {
                   {(["cash", "nayapay", "meezan"] as const).map((method) => (
                     <button
                       key={method}
-                      disabled={isCheckingOut}
+                      disabled={isBusy}
                       onClick={() => setPaymentMethod(method)}
                       className={`rounded-2xl px-3 py-3 font-bold capitalize border ${
                         paymentMethod === method
                           ? "bg-[#d81b72] text-white border-[#d81b72]"
                           : "bg-white text-[#241814] border-[#ead8c2]"
-                      } ${
-                        isCheckingOut ? "opacity-60 cursor-not-allowed" : ""
-                      }`}
+                      } ${isBusy ? "opacity-60 cursor-not-allowed" : ""}`}
                     >
                       {method}
                     </button>
@@ -1181,9 +1610,9 @@ export default function POSPage() {
               <div className="mt-5">
                 <button
                   onClick={checkout}
-                  disabled={isCheckingOut || cart.length === 0}
+                  disabled={isBusy || cart.length === 0}
                   className={`w-full rounded-2xl py-4 font-bold shadow-[0_10px_25px_rgba(216,27,114,0.35)] ${
-                    isCheckingOut || cart.length === 0
+                    isBusy || cart.length === 0
                       ? "bg-[#9d8a82] text-white cursor-not-allowed"
                       : "bg-[#d81b72] text-white"
                   }`}
