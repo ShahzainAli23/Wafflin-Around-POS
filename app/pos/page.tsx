@@ -531,16 +531,11 @@ export default function POSPage() {
     resetBuildFlow();
   }
 
-  function toggleIceCreamFlavor(id: string) {
+  function addIceCreamFlavor(id: string) {
     if (isCheckingOut || isUpdatingOrder) return;
     if (!iceCreamProduct) return;
 
     const maxFlavors = scoopCountMap[iceCreamProduct.size || "1 Scoop"] || 1;
-
-    if (iceCreamFlavorIds.includes(id)) {
-      setIceCreamFlavorIds((prev) => prev.filter((x) => x !== id));
-      return;
-    }
 
     if (iceCreamFlavorIds.length >= maxFlavors) {
       setNotice(`Only ${maxFlavors} flavor${maxFlavors > 1 ? "s" : ""}`);
@@ -548,6 +543,12 @@ export default function POSPage() {
     }
 
     setIceCreamFlavorIds((prev) => [...prev, id]);
+  }
+
+  function removeLastIceCreamFlavor() {
+    if (isCheckingOut || isUpdatingOrder) return;
+
+    setIceCreamFlavorIds((prev) => prev.slice(0, -1));
   }
 
   function confirmIceCream() {
@@ -565,9 +566,9 @@ export default function POSPage() {
       return;
     }
 
-    const flavorOptions = iceCreamFlavorOptions.filter((o) =>
-      iceCreamFlavorIds.includes(o.id)
-    );
+    const flavorOptions = iceCreamFlavorIds
+      .map((id) => iceCreamFlavorOptions.find((o) => o.id === id))
+      .filter(Boolean) as Option[];
 
     const selectedOptions = [...flavorOptions, ...iceCreamAddons];
 
@@ -589,11 +590,16 @@ export default function POSPage() {
 
   function removeItem(index: number) {
     if (isCheckingOut || isUpdatingOrder) return;
-    setCart((prev) => prev.filter((_, i) => i !== index));
 
-    if (cart.length <= 1) {
-      setDiscountApplied(false);
-    }
+    setCart((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+
+      if (next.length === 0) {
+        setDiscountApplied(false);
+      }
+
+      return next;
+    });
   }
 
   const subtotal = useMemo(() => {
@@ -1120,32 +1126,88 @@ export default function POSPage() {
         ? scoopCountMap[iceCreamProduct.size || "1 Scoop"] || 1
         : 1;
 
+      const selectedFlavorText =
+        iceCreamFlavorIds.length === 0
+          ? "None selected"
+          : iceCreamFlavorIds
+              .map(
+                (id) =>
+                  iceCreamFlavorOptions.find((option) => option.id === id)?.name
+              )
+              .filter(Boolean)
+              .join(" + ");
+
       return (
         <div className="space-y-4">
           <p className="text-lg font-bold text-[#241814]">
             Choose {maxFlavors} flavor{maxFlavors > 1 ? "s" : ""}
           </p>
 
+          <div className="rounded-2xl bg-[#fff9f1] border border-[#ead8c2] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-[#8b4b39]">
+                  Selected Flavors
+                </p>
+                <p className="mt-1 font-bold text-[#241814]">
+                  {selectedFlavorText}
+                </p>
+                <p className="text-sm text-[#7b5b4f] mt-1">
+                  {iceCreamFlavorIds.length} / {maxFlavors} selected
+                </p>
+              </div>
+
+              <button
+                onClick={removeLastIceCreamFlavor}
+                disabled={
+                  iceCreamFlavorIds.length === 0 ||
+                  isCheckingOut ||
+                  isUpdatingOrder
+                }
+                className={`rounded-xl px-4 py-2 font-bold ${
+                  iceCreamFlavorIds.length === 0 ||
+                  isCheckingOut ||
+                  isUpdatingOrder
+                    ? "bg-[#9d8a82] text-white cursor-not-allowed"
+                    : "bg-[#241814] text-white"
+                }`}
+              >
+                Undo Last
+              </button>
+            </div>
+          </div>
+
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
             {iceCreamFlavorOptions.map((option) => {
-              const active = iceCreamFlavorIds.includes(option.id);
+              const selectedCount = iceCreamFlavorIds.filter(
+                (id) => id === option.id
+              ).length;
+
+              const active = selectedCount > 0;
+              const maxReached = iceCreamFlavorIds.length >= maxFlavors;
 
               return (
                 <button
                   key={option.id}
-                  disabled={isCheckingOut || isUpdatingOrder}
-                  onClick={() => toggleIceCreamFlavor(option.id)}
+                  disabled={isCheckingOut || isUpdatingOrder || maxReached}
+                  onClick={() => addIceCreamFlavor(option.id)}
                   className={`rounded-[22px] border p-5 text-left ${
                     active
                       ? "bg-[#d81b72] text-white border-[#d81b72]"
                       : "bg-[#fff9f1] text-[#241814] border-[#ead8c2]"
                   } ${
-                    isCheckingOut || isUpdatingOrder
+                    isCheckingOut || isUpdatingOrder || maxReached
                       ? "opacity-60 cursor-not-allowed"
                       : ""
                   }`}
                 >
                   <p className="font-bold text-lg">{option.name}</p>
+
+                  {selectedCount > 0 && (
+                    <p className="mt-2 text-sm font-bold">
+                      Selected x{selectedCount}
+                    </p>
+                  )}
                 </button>
               );
             })}
