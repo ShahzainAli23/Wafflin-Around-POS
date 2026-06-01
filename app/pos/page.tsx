@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 type Product = {
   id: string;
@@ -38,6 +39,8 @@ type ActiveOrder = {
   payment_method: "cash" | "nayapay" | "meezan";
   created_at: string;
   status: string;
+  is_free: boolean;
+  free_reason: string | null;
 };
 
 type ActiveOrderItem = {
@@ -70,9 +73,19 @@ type Screen =
   | "build-topping"
   | "build-addons"
   | "kitkat-size"
+  | "kitkat-addons"
+  | "extras"
   | "icecream-size"
   | "icecream-flavor"
   | "icecream-addons";
+
+type FreeReason = "loyalty_free" | "shahzain_fatima" | "jalal";
+
+const freeReasonLabel: Record<FreeReason, string> = {
+  loyalty_free: "Loyalty Free",
+  shahzain_fatima: "Shahzain/Fatima",
+  jalal: "Jalal",
+};
 
 const waffleSizeLabel: Record<string, string> = {
   Small: "Quarter",
@@ -150,6 +163,7 @@ export default function POSPage() {
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [isUpdatingOrder, setIsUpdatingOrder] = useState(false);
   const [discountApplied, setDiscountApplied] = useState(false);
+  const [freeReason, setFreeReason] = useState<FreeReason | null>(null);
 
   const [activeOrders, setActiveOrders] = useState<ActiveOrder[]>([]);
   const [activeOrderItems, setActiveOrderItems] = useState<ActiveOrderItem[]>(
@@ -166,6 +180,8 @@ export default function POSPage() {
   const [buildSauce, setBuildSauce] = useState<Option | null>(null);
   const [buildTopping, setBuildTopping] = useState<Option | null>(null);
   const [buildAddons, setBuildAddons] = useState<Option[]>([]);
+  const [kitkatProduct, setKitkatProduct] = useState<Product | null>(null);
+  const [kitkatAddons, setKitkatAddons] = useState<Option[]>([]);
 
   const [iceCreamProduct, setIceCreamProduct] = useState<Product | null>(null);
   const [iceCreamFlavorIds, setIceCreamFlavorIds] = useState<string[]>([]);
@@ -247,7 +263,7 @@ export default function POSPage() {
     const { data: orderData, error: orderError } = await supabase
       .from("orders")
       .select(
-        "id, order_no, subtotal, discount, total, payment_method, created_at, status"
+        "id, order_no, subtotal, discount, total, payment_method, created_at, status, is_free, free_reason"
       )
       .eq("worker_id", workerId)
       .eq("status", "active")
@@ -405,6 +421,11 @@ export default function POSPage() {
     setBuildAddons([]);
   }
 
+  function resetKitkatFlow() {
+    setKitkatProduct(null);
+    setKitkatAddons([]);
+  }
+
   function resetIceCreamFlow() {
     setIceCreamProduct(null);
     setIceCreamFlavorIds([]);
@@ -461,6 +482,12 @@ export default function POSPage() {
 
   const iceCreamProducts = useMemo(() => {
     return products.filter((p) => p.category === "Ice Cream");
+  }, [products]);
+
+  const extraProducts = useMemo(() => {
+    return products
+      .filter((p) => p.category === "Extras")
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [products]);
 
   const filteredIceCreamAddons = useMemo(() => {
@@ -531,6 +558,30 @@ export default function POSPage() {
     resetBuildFlow();
   }
 
+  function confirmKitkatWaffle() {
+    if (isCheckingOut || isUpdatingOrder) return;
+
+    if (!kitkatProduct) {
+      setNotice("Choose Kit Kat waffle size first");
+      return;
+    }
+
+    const extras = kitkatAddons.reduce((sum, item) => {
+      return sum + Number(item.price);
+    }, 0);
+
+    addToCart({
+      product: kitkatProduct,
+      title: "Kit Kat Waffle",
+      subtitle: formatWaffleSize(kitkatProduct.size),
+      quantity: 1,
+      selectedOptions: kitkatAddons,
+      lineTotal: Number(kitkatProduct.price) + extras,
+    });
+
+    resetKitkatFlow();
+  }
+
   function addIceCreamFlavor(id: string) {
     if (isCheckingOut || isUpdatingOrder) return;
     if (!iceCreamProduct) return;
@@ -596,6 +647,7 @@ export default function POSPage() {
 
       if (next.length === 0) {
         setDiscountApplied(false);
+        setFreeReason(null);
       }
 
       return next;
@@ -607,9 +659,10 @@ export default function POSPage() {
   }, [cart]);
 
   const discountAmount = useMemo(() => {
+    if (freeReason) return subtotal;
     if (!discountApplied) return 0;
     return Math.round(subtotal * 0.2);
-  }, [subtotal, discountApplied]);
+  }, [subtotal, discountApplied, freeReason]);
 
   const total = useMemo(() => {
     return subtotal - discountAmount;
@@ -623,7 +676,20 @@ export default function POSPage() {
       return;
     }
 
+    setFreeReason(null);
     setDiscountApplied((prev) => !prev);
+  }
+
+  function toggleFreeReason(reason: FreeReason) {
+    if (isCheckingOut || isUpdatingOrder) return;
+
+    if (cart.length === 0) {
+      setNotice("Add items first");
+      return;
+    }
+
+    setDiscountApplied(false);
+    setFreeReason((prev) => (prev === reason ? null : reason));
   }
 
   async function checkout() {
@@ -653,6 +719,8 @@ export default function POSPage() {
       const currentTotal = total;
       const currentPaymentMethod = paymentMethod;
       const loyaltyDiscountApplied = discountApplied;
+      const currentFreeReason = freeReason;
+      const currentIsFree = Boolean(currentFreeReason);
 
       const { data: order, error: orderError } = await supabase
         .from("orders")
@@ -662,6 +730,8 @@ export default function POSPage() {
           discount: currentDiscount,
           total: currentTotal,
           payment_method: currentPaymentMethod,
+          is_free: currentIsFree,
+          free_reason: currentFreeReason,
           status: "active",
         })
         .select()
@@ -722,12 +792,15 @@ export default function POSPage() {
           items: currentCart.length,
           status: "active",
           loyaltyDiscountApplied,
+          isFree: currentIsFree,
+          freeReason: currentFreeReason,
         },
       });
 
       setCart([]);
       setPaymentMethod("cash");
       setDiscountApplied(false);
+      setFreeReason(null);
       setHistory([]);
       setScreen("root");
       await loadActiveOrders(user.id);
@@ -756,7 +829,7 @@ export default function POSPage() {
 
     if (screen === "root") {
       return (
-        <div className="grid md:grid-cols-3 gap-4">
+        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
           <ChoiceCard
             title="Drinks"
             subtitle="Coffee and shakes"
@@ -774,6 +847,12 @@ export default function POSPage() {
             subtitle="1, 2 or 3 scoops"
             disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("icecream-size")}
+          />
+          <ChoiceCard
+            title="Extras"
+            subtitle="Add-ons, plates, cups and cutlery"
+            disabled={isCheckingOut || isUpdatingOrder}
+            onClick={() => navigate("extras")}
           />
         </div>
       );
@@ -915,7 +994,10 @@ export default function POSPage() {
             title="Kit Kat Waffle"
             subtitle="Choose size"
             disabled={isCheckingOut || isUpdatingOrder}
-            onClick={() => navigate("kitkat-size")}
+            onClick={() => {
+              resetKitkatFlow();
+              navigate("kitkat-size");
+            }}
           />
         </div>
       );
@@ -931,15 +1013,99 @@ export default function POSPage() {
               subtitle="Kit Kat Waffle"
               price={Number(product.price)}
               disabled={isCheckingOut || isUpdatingOrder}
-              onClick={() =>
-                addSimpleProduct(
-                  product,
-                  "Kit Kat Waffle",
-                  formatWaffleSize(product.size)
-                )
-              }
+              onClick={() => {
+                setKitkatProduct(product);
+                navigate("kitkat-addons");
+              }}
             />
           ))}
+        </div>
+      );
+    }
+
+    if (screen === "kitkat-addons") {
+      return (
+        <div className="space-y-4">
+          <div>
+            <p className="text-lg font-bold text-[#241814]">Kit Kat Waffle Add-ons</p>
+            <p className="text-[#7b5b4f] mt-1">Optional. Kit Kat waffle already includes Nutella sauce.</p>
+          </div>
+
+          <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {addOns.map((option) => {
+              const active = kitkatAddons.some((o) => o.id === option.id);
+
+              return (
+                <button
+                  key={option.id}
+                  disabled={isCheckingOut || isUpdatingOrder}
+                  onClick={() =>
+                    toggleOption(kitkatAddons, option, setKitkatAddons)
+                  }
+                  className={`rounded-[22px] border p-5 text-left ${
+                    active
+                      ? "bg-[#d81b72] text-white border-[#d81b72]"
+                      : "bg-[#fff9f1] text-[#241814] border-[#ead8c2]"
+                  } ${
+                    isCheckingOut || isUpdatingOrder
+                      ? "opacity-60 cursor-not-allowed"
+                      : ""
+                  }`}
+                >
+                  <p className="font-bold text-lg">{option.name}</p>
+                  <p
+                    className={`${
+                      active ? "text-white/80" : "text-[#7b5b4f]"
+                    } mt-1`}
+                  >
+                    + Rs. {option.price}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            disabled={isCheckingOut || isUpdatingOrder}
+            onClick={confirmKitkatWaffle}
+            className={`rounded-2xl px-5 py-3 font-bold shadow-[0_10px_25px_rgba(216,27,114,0.35)] ${
+              isCheckingOut || isUpdatingOrder
+                ? "bg-[#9d8a82] text-white cursor-not-allowed"
+                : "bg-[#d81b72] text-white"
+            }`}
+          >
+            Add to cart
+          </button>
+        </div>
+      );
+    }
+
+    if (screen === "extras") {
+      return (
+        <div className="space-y-4">
+          <div>
+            <p className="text-lg font-bold text-[#241814]">Sell Extras Separately</p>
+            <p className="text-[#7b5b4f] mt-1">Add-ons, cups, plates, cutlery, straws and ice.</p>
+          </div>
+
+          <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {extraProducts.map((product) => (
+              <ChoiceCard
+                key={product.id}
+                title={product.name}
+                subtitle="Extra"
+                price={Number(product.price)}
+                disabled={isCheckingOut || isUpdatingOrder}
+                onClick={() => addSimpleProduct(product, product.name, "Extra")}
+              />
+            ))}
+          </div>
+
+          {extraProducts.length === 0 ? (
+            <div className="rounded-2xl border border-[#ead8c2] bg-[#fff9f1] p-5 text-[#7b5b4f] font-bold">
+              No extras found. Run the Extras SQL first.
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -1310,6 +1476,8 @@ export default function POSPage() {
       "build-topping": "Build a Waffle - Topping",
       "build-addons": "Build a Waffle - Add-ons",
       "kitkat-size": "Kit Kat Waffle",
+      "kitkat-addons": "Kit Kat Waffle - Add-ons",
+      extras: "Extras",
       "icecream-size": "Ice Cream",
       "icecream-flavor": "Ice Cream - Flavors",
       "icecream-addons": "Ice Cream - Add-ons",
@@ -1373,6 +1541,24 @@ export default function POSPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href="/worker/dashboard"
+              className={`rounded-2xl border border-[#ead8c2] bg-white px-4 py-2 font-bold text-[#241814] ${
+                isBusy ? "pointer-events-none opacity-60" : ""
+              }`}
+            >
+              Dashboard
+            </Link>
+
+            <Link
+              href="/worker/usage"
+              className={`rounded-2xl border border-[#ead8c2] bg-white px-4 py-2 font-bold text-[#241814] ${
+                isBusy ? "pointer-events-none opacity-60" : ""
+              }`}
+            >
+              Usage
+            </Link>
+
             {notice ? (
               <div className="rounded-2xl bg-[#ffe5f1] text-[#a10d52] px-4 py-2 font-bold">
                 {notice}
@@ -1442,7 +1628,19 @@ export default function POSPage() {
                                 Order #{order.order_no}
                               </p>
 
-                              {Number(order.discount) > 0 ? (
+                              {order.is_free ? (
+                                <div>
+                                  <p className="text-sm text-[#7b5b4f] line-through mt-1">
+                                    Rs. {order.subtotal}
+                                  </p>
+                                  <h3 className="text-2xl font-bold text-[#241814]">
+                                    Rs. 0
+                                  </h3>
+                                  <p className="text-sm font-bold text-[#d81b72]">
+                                    Free: {order.free_reason ? freeReasonLabel[order.free_reason as FreeReason] : "Free order"}
+                                  </p>
+                                </div>
+                              ) : Number(order.discount) > 0 ? (
                                 <div>
                                   <p className="text-sm text-[#7b5b4f] line-through mt-1">
                                     Rs. {order.subtotal}
@@ -1704,13 +1902,13 @@ export default function POSPage() {
 
                 <button
                   onClick={toggleDiscount}
-                  disabled={isBusy || cart.length === 0}
+                  disabled={isBusy || cart.length === 0 || Boolean(freeReason)}
                   className={`w-full rounded-2xl border py-3 font-bold ${
                     discountApplied
                       ? "bg-[#ffe5f1] border-[#d81b72] text-[#a10d52]"
                       : "bg-white border-[#ead8c2] text-[#241814]"
                   } ${
-                    isBusy || cart.length === 0
+                    isBusy || cart.length === 0 || Boolean(freeReason)
                       ? "opacity-60 cursor-not-allowed"
                       : ""
                   }`}
@@ -1726,6 +1924,46 @@ export default function POSPage() {
                     <p className="text-[#a10d52] font-bold">
                       - Rs. {discountAmount}
                     </p>
+                  </div>
+                )}
+
+                <div>
+                  <p className="text-sm font-bold text-[#241814] mb-3">
+                    Free Order
+                  </p>
+
+                  <div className="grid grid-cols-1 gap-2">
+                    {([
+                      ["loyalty_free", "Loyalty Free"],
+                      ["shahzain_fatima", "Shahzain/Fatima"],
+                      ["jalal", "Jalal"],
+                    ] as const).map(([reason, label]) => (
+                      <button
+                        key={reason}
+                        disabled={isBusy || cart.length === 0}
+                        onClick={() => toggleFreeReason(reason)}
+                        className={`rounded-2xl border px-3 py-3 font-bold ${
+                          freeReason === reason
+                            ? "bg-[#241814] text-white border-[#241814]"
+                            : "bg-white text-[#241814] border-[#ead8c2]"
+                        } ${
+                          isBusy || cart.length === 0
+                            ? "opacity-60 cursor-not-allowed"
+                            : ""
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {freeReason && (
+                  <div className="flex items-center justify-between rounded-2xl bg-[#241814] px-4 py-3">
+                    <p className="text-white font-bold">
+                      Free Order: {freeReasonLabel[freeReason]}
+                    </p>
+                    <p className="text-white font-bold">- Rs. {subtotal}</p>
                   </div>
                 )}
 
