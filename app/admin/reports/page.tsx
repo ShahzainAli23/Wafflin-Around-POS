@@ -108,14 +108,21 @@ type MonthSummary = {
 };
 
 function money(value: number) {
-  const rounded = Math.round(value || 0);
-  const abs = Math.abs(rounded).toLocaleString();
+  const num = Number(value || 0);
+  const rounded = Number(num.toFixed(2));
+  const abs = Math.abs(rounded);
+  const formatted = Number.isInteger(abs)
+    ? abs.toLocaleString()
+    : abs.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
 
   if (rounded < 0) {
-    return `- Rs. ${abs}`;
+    return `- Rs. ${formatted}`;
   }
 
-  return `Rs. ${abs}`;
+  return `Rs. ${formatted}`;
 }
 
 function dateKey(value: string) {
@@ -177,8 +184,20 @@ const FROZEN_HOT_CHOCOLATE_MILK_ML = 200;
 const FROZEN_HOT_CHOCOLATE_CREAM_G = 50;
 const CREAM_PACK_G_ESTIMATE = 200;
 const CREAM_PACK_COST = 250;
-const CRAVE_CHOCOLATE_PACK_G_ESTIMATE = 1000;
-const CRAVE_CHOCOLATE_PACK_COST = 0;
+const CRAVE_CHOCOLATE_PACK_G_ESTIMATE = 500;
+const CRAVE_CHOCOLATE_PACK_COST = 950;
+
+const PACKAGING_EXTRA_COSTS: Record<string, number> = {
+  "Big Plate": 15,
+  "Small Plate": 12,
+  "Coffee Cup": 11,
+  Fork: 3.5,
+  Spoon: 3.5,
+  Knife: 2.5,
+  "Large Cup": 20,
+  "Regular Cup": 15,
+  Straw: 3,
+};
 const STANDALONE_SAUCE_EXTRA_ML = 30;
 const STANDALONE_CHOCOLATE_CHIPS_G = 12;
 const STANDALONE_OREO_PACKETS = 1;
@@ -359,6 +378,10 @@ function buildUsageEstimateRows(
 
       if (name === "Ice") {
         addEstimate(map, "ice", "Ice", costFromPack(quantity * STANDALONE_ICE_G, ICE_BAG_G, ICE_BAG_COST));
+      }
+
+      if (["Small Plate", "Big Plate", "Spoon", "Knife", "Fork", "Regular Cup", "Large Cup", "Coffee Cup", "Straw"].includes(name)) {
+        addEstimate(map, "packaging", "Packaging Extras", quantity * (PACKAGING_EXTRA_COSTS[name] || 0));
       }
     }
 
@@ -864,6 +887,28 @@ export default function AdminReportsPage() {
       a.monthKey < b.monthKey ? 1 : -1
     );
   }, [orders, legacyRevenue]);
+
+  useEffect(() => {
+    if (dailySummaries.length === 0) return;
+
+    const exists = dailySummaries.some((day) => day.dateKey === selectedDate);
+
+    if (!selectedDate || !exists) {
+      setSelectedDate(dailySummaries[0].dateKey);
+    }
+  }, [dailySummaries, selectedDate]);
+
+  useEffect(() => {
+    if (monthlySummaries.length === 0) return;
+
+    const exists = monthlySummaries.some(
+      (month) => month.monthKey === selectedMonth
+    );
+
+    if (!selectedMonth || !exists) {
+      setSelectedMonth(monthlySummaries[0].monthKey);
+    }
+  }, [monthlySummaries, selectedMonth]);
 
   const selectedDayOrders = useMemo(() => {
     if (!selectedDate) return [];
@@ -1630,10 +1675,10 @@ export default function AdminReportsPage() {
             <section className="mt-5 rounded-[30px] bg-[#151922] border border-white/10 p-5">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between mb-5">
                 <div>
-                  <h2 className="text-2xl font-bold">Usage Cost vs Expenses</h2>
+                  <h2 className="text-2xl font-bold">Usage Cost vs Expenses Report</h2>
                   <p className="text-white/50 mt-1">
-                    Compares estimated POS usage cost with actual expenses entered for the selected {viewMode === "daily" ? "day" : "month"}.
-                    Legacy revenue has no item-level usage, so this uses POS orders only.
+                    This is the report you asked for: estimated POS usage cost against actual expenses entered for the selected {viewMode === "daily" ? "day" : "month"}.
+                    It auto-opens the latest available period, and you can click another day/month above to compare a different period.
                   </p>
                 </div>
 
@@ -1718,7 +1763,8 @@ export default function AdminReportsPage() {
               )}
 
               <div className="mt-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/20 p-4 text-yellow-100 text-sm">
-                Crave Chocolate cost is still set to Rs. 0 because its pack cost was not given yet, so Frozen Hot Chocolate is undercounted until that is updated.
+                This comparison uses POS orders only for estimated usage. Legacy revenue has no item-level usage, so it stays out of usage costing.
+                Actual expenses come from the expenses table for the selected period.
               </div>
             </section>
 
