@@ -123,7 +123,7 @@ const categoryItems: Record<ExpenseCategory, string[]> = {
 
   syrups: ["Chocolate", "Hazelnut", "Vanilla", "Caramel"],
 
-  ice_cream: ["Strawberry", "Vanilla", "Chocolate", "Cookies & Cream"],
+  ice_cream: ["Strawberry", "Vanilla", "Chocolate", "Cookies & Cream", "Mango"],
 
   wages: ["Miscellaneous"],
   utility_rent: ["Miscellaneous"],
@@ -875,28 +875,7 @@ export default function ExpensesPage() {
                 href="/admin"
                 className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
               >
-                Admin Home
-              </Link>
-
-              <Link
-                href="/admin/dashboard"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Dashboard
-              </Link>
-
-              <Link
-                href="/admin/reports"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Reports
-              </Link>
-
-              <Link
-                href="/admin/split"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Split
+                Back
               </Link>
 
               <button

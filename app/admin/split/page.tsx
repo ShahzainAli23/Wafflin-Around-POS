@@ -256,28 +256,7 @@ export default function SplitPage() {
                 href="/admin"
                 className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
               >
-                Admin Home
-              </Link>
-
-              <Link
-                href="/admin/dashboard"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Dashboard
-              </Link>
-
-              <Link
-                href="/admin/reports"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Reports
-              </Link>
-
-              <Link
-                href="/admin/expenses"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Expenses
+                Back
               </Link>
 
               <button

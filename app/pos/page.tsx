@@ -35,6 +35,7 @@ type ActiveOrder = {
   order_no: number;
   subtotal: number;
   discount: number;
+  discount_percent?: number | null;
   total: number;
   payment_method: "cash" | "nayapay" | "meezan";
   created_at: string;
@@ -163,6 +164,7 @@ export default function POSPage() {
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [isUpdatingOrder, setIsUpdatingOrder] = useState(false);
   const [discountApplied, setDiscountApplied] = useState(false);
+  const [customDiscountPercent, setCustomDiscountPercent] = useState("");
   const [freeReason, setFreeReason] = useState<FreeReason | null>(null);
 
   const [activeOrders, setActiveOrders] = useState<ActiveOrder[]>([]);
@@ -263,7 +265,7 @@ export default function POSPage() {
     const { data: orderData, error: orderError } = await supabase
       .from("orders")
       .select(
-        "id, order_no, subtotal, discount, total, payment_method, created_at, status, is_free, free_reason"
+        "id, order_no, subtotal, discount, discount_percent, total, payment_method, created_at, status, is_free, free_reason"
       )
       .eq("worker_id", workerId)
       .eq("status", "active")
@@ -472,6 +474,12 @@ export default function POSPage() {
     );
   }, [products]);
 
+  const coldBrewProduct = useMemo(() => {
+    return products.find(
+      (p) => p.category === "Cold Brew" && p.name === "Cold Brew"
+    );
+  }, [products]);
+
   const shakeProducts = useMemo(() => {
     return products.filter((p) => p.category === "Ice Cream Shakes");
   }, [products]);
@@ -647,6 +655,7 @@ export default function POSPage() {
 
       if (next.length === 0) {
         setDiscountApplied(false);
+        setCustomDiscountPercent("");
         setFreeReason(null);
       }
 
@@ -658,11 +667,28 @@ export default function POSPage() {
     return cart.reduce((sum, item) => sum + item.lineTotal, 0);
   }, [cart]);
 
+  const customDiscountNumber = useMemo(() => {
+    const value = Number(customDiscountPercent);
+
+    if (!Number.isFinite(value)) return 0;
+    if (value < 0) return 0;
+    if (value > 100) return 100;
+
+    return value;
+  }, [customDiscountPercent]);
+
+  const activeDiscountPercent = useMemo(() => {
+    if (freeReason) return 100;
+    if (customDiscountNumber > 0) return customDiscountNumber;
+    if (discountApplied) return 20;
+    return 0;
+  }, [freeReason, customDiscountNumber, discountApplied]);
+
   const discountAmount = useMemo(() => {
     if (freeReason) return subtotal;
-    if (!discountApplied) return 0;
-    return Math.round(subtotal * 0.2);
-  }, [subtotal, discountApplied, freeReason]);
+    if (activeDiscountPercent <= 0) return 0;
+    return Math.round(subtotal * (activeDiscountPercent / 100));
+  }, [subtotal, activeDiscountPercent, freeReason]);
 
   const total = useMemo(() => {
     return subtotal - discountAmount;
@@ -677,6 +703,7 @@ export default function POSPage() {
     }
 
     setFreeReason(null);
+    setCustomDiscountPercent("");
     setDiscountApplied((prev) => !prev);
   }
 
@@ -689,7 +716,27 @@ export default function POSPage() {
     }
 
     setDiscountApplied(false);
+    setCustomDiscountPercent("");
     setFreeReason((prev) => (prev === reason ? null : reason));
+  }
+
+  function handleCustomDiscountChange(value: string) {
+    if (isCheckingOut || isUpdatingOrder) return;
+
+    const cleaned = value.replace(/[^0-9.]/g, "");
+    const numeric = Number(cleaned);
+
+    if (cleaned === "") {
+      setCustomDiscountPercent("");
+      return;
+    }
+
+    if (!Number.isFinite(numeric)) return;
+
+    const capped = Math.max(0, Math.min(100, numeric));
+    setFreeReason(null);
+    setDiscountApplied(false);
+    setCustomDiscountPercent(String(capped));
   }
 
   async function checkout() {
@@ -719,6 +766,8 @@ export default function POSPage() {
       const currentTotal = total;
       const currentPaymentMethod = paymentMethod;
       const loyaltyDiscountApplied = discountApplied;
+      const currentCustomDiscountPercent = customDiscountNumber;
+      const currentDiscountPercent = activeDiscountPercent;
       const currentFreeReason = freeReason;
       const currentIsFree = Boolean(currentFreeReason);
 
@@ -728,6 +777,7 @@ export default function POSPage() {
           worker_id: user.id,
           subtotal: currentSubtotal,
           discount: currentDiscount,
+          discount_percent: currentDiscountPercent,
           total: currentTotal,
           payment_method: currentPaymentMethod,
           is_free: currentIsFree,
@@ -787,11 +837,14 @@ export default function POSPage() {
         details: {
           subtotal: currentSubtotal,
           discount: currentDiscount,
+          discount_percent: currentDiscountPercent,
           total: currentTotal,
           paymentMethod: currentPaymentMethod,
           items: currentCart.length,
           status: "active",
           loyaltyDiscountApplied,
+          customDiscountPercent: currentCustomDiscountPercent,
+          discountPercent: currentDiscountPercent,
           isFree: currentIsFree,
           freeReason: currentFreeReason,
         },
@@ -800,6 +853,7 @@ export default function POSPage() {
       setCart([]);
       setPaymentMethod("cash");
       setDiscountApplied(false);
+      setCustomDiscountPercent("");
       setFreeReason(null);
       setHistory([]);
       setScreen("root");
@@ -829,7 +883,7 @@ export default function POSPage() {
 
     if (screen === "root") {
       return (
-        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid md:grid-cols-2 xl:grid-cols-5 gap-4">
           <ChoiceCard
             title="Drinks"
             subtitle="Coffee and shakes"
@@ -853,6 +907,16 @@ export default function POSPage() {
             subtitle="Add-ons, plates, cups and cutlery"
             disabled={isCheckingOut || isUpdatingOrder}
             onClick={() => navigate("extras")}
+          />
+          <ChoiceCard
+            title="Cold Brew"
+            subtitle="Ready item"
+            price={coldBrewProduct ? Number(coldBrewProduct.price) : 895}
+            disabled={isCheckingOut || isUpdatingOrder || !coldBrewProduct}
+            onClick={() =>
+              coldBrewProduct &&
+              addSimpleProduct(coldBrewProduct, "Cold Brew", "Ready item")
+            }
           />
         </div>
       );
@@ -1559,6 +1623,15 @@ export default function POSPage() {
               Usage
             </Link>
 
+            <Link
+              href="/worker/expenses"
+              className={`rounded-2xl border border-[#ead8c2] bg-white px-4 py-2 font-bold text-[#241814] ${
+                isBusy ? "pointer-events-none opacity-60" : ""
+              }`}
+            >
+              Expenses
+            </Link>
+
             {notice ? (
               <div className="rounded-2xl bg-[#ffe5f1] text-[#a10d52] px-4 py-2 font-bold">
                 {notice}
@@ -1926,6 +1999,32 @@ export default function POSPage() {
                     </p>
                   </div>
                 )}
+
+                <div className="rounded-2xl bg-white border border-[#ead8c2] p-3">
+                  <label className="block text-sm font-bold text-[#241814] mb-2">
+                    Custom Discount %
+                  </label>
+                  <input
+                    value={customDiscountPercent}
+                    onChange={(e) => handleCustomDiscountChange(e.target.value)}
+                    disabled={isBusy || cart.length === 0 || Boolean(freeReason)}
+                    type="number"
+                    min="0"
+                    max="100"
+                    placeholder="0 to 100"
+                    className="w-full rounded-xl border border-[#ead8c2] bg-[#fff9f1] px-3 py-3 text-[#241814] font-bold outline-none"
+                  />
+                  {customDiscountNumber > 0 && !freeReason ? (
+                    <div className="mt-3 flex items-center justify-between rounded-xl bg-[#ffe5f1] px-3 py-2">
+                      <p className="text-[#a10d52] font-bold">
+                        Discount {activeDiscountPercent}%
+                      </p>
+                      <p className="text-[#a10d52] font-bold">
+                        - Rs. {discountAmount}
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
 
                 <div>
                   <p className="text-sm font-bold text-[#241814] mb-3">

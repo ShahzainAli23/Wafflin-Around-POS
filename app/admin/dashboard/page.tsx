@@ -23,6 +23,8 @@ type Order = {
   payment_method: "cash" | "nayapay" | "meezan";
   created_at: string;
   status: "active" | "completed" | "cancelled" | string;
+  is_free?: boolean | null;
+  free_reason?: string | null;
 };
 
 type OrderItem = {
@@ -108,6 +110,13 @@ function getRange(selectedDate: string, mode: RangeMode) {
 
 function money(value: number) {
   return `Rs. ${value}`;
+}
+
+function freeReasonLabel(reason: string | null | undefined) {
+  if (reason === "loyalty_free") return "Loyalty Free";
+  if (reason === "shahzain_fatima") return "Shahzain/Fatima";
+  if (reason === "jalal") return "Jalal";
+  return "Free Order";
 }
 
 export default function AdminPage() {
@@ -469,6 +478,12 @@ export default function AdminPage() {
               </div>
             )}
 
+            {selectedOrder.is_free && (
+              <div className="mt-5 rounded-2xl border border-green-500/30 bg-green-500/10 p-4 text-green-200 font-bold">
+                Free order reason: {freeReasonLabel(selectedOrder.free_reason)}
+              </div>
+            )}
+
             <div className="mt-6 space-y-4">
               {selectedOrderItems.length === 0 ? (
                 <div className="rounded-2xl bg-white/5 p-4 text-white/60">
@@ -555,10 +570,10 @@ export default function AdminPage() {
               />
 
               <Link
-                href="/admin/reports"
+                href="/admin"
                 className="rounded-2xl bg-[#d81b72] px-5 py-3 font-bold text-white"
               >
-                Reports
+                Back
               </Link>
 
               <button
@@ -850,6 +865,12 @@ export default function AdminPage() {
                       >
                         {order.status}
                       </p>
+
+                      {order.is_free && (
+                        <p className="text-green-200 text-sm mt-1 font-bold">
+                          {freeReasonLabel(order.free_reason)}
+                        </p>
+                      )}
                     </div>
 
                     <div className="text-right">

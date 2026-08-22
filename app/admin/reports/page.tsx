@@ -10,15 +10,19 @@ type Order = {
   order_no: number;
   subtotal: number;
   discount: number;
+  discount_percent?: number | null;
   total: number;
   payment_method: "cash" | "nayapay" | "meezan";
   created_at: string;
   status: "active" | "completed" | "cancelled" | string;
+  is_free?: boolean | null;
+  free_reason?: string | null;
 };
 
 type OrderItem = {
   id: string;
   order_id: string;
+  product_id?: string | null;
   product_name: string;
   category: string;
   quantity: number;
@@ -42,6 +46,33 @@ type LegacyRevenue = {
   meezan: number;
   source: string | null;
   created_at: string;
+};
+
+type Expense = {
+  id: string;
+  category: string;
+  item_name: string | null;
+  amount: number;
+  expense_date: string;
+  note: string | null;
+  created_at: string;
+};
+
+type Product = {
+  id: string;
+  category: string;
+  name: string;
+  variant: string | null;
+  size: string | null;
+  price: number;
+};
+
+type UsageComparisonRow = {
+  key: string;
+  label: string;
+  estimatedUsageCost: number;
+  actualExpense: number;
+  variance: number;
 };
 
 type DaySummary = {
@@ -114,6 +145,385 @@ function isRevenueOrder(order: Order) {
   return order.status !== "cancelled";
 }
 
+const ML_PER_ICE_CREAM_BOX = 1500;
+const ICE_CREAM_BOX_COST = 1200;
+const MILK_BOTTLE_ML = 1000;
+const MILK_BOTTLE_COST = 380;
+const SYRUP_BOTTLE_ML = 1000;
+const COFFEE_SYRUP_BOTTLE_COST = 2300;
+const MAPLE_BOTTLE_ML = 710;
+const MAPLE_BOTTLE_COST = 2350;
+const HERSHEY_CHOCOLATE_BOTTLE_ML_ESTIMATE = 500;
+const HERSHEY_STRAWBERRY_BOTTLE_ML_ESTIMATE = 460;
+const HERSHEY_BOTTLE_COST = 1450;
+const NUTELLA_MIX_BOTTLE_ML_ESTIMATE = 1100;
+const NUTELLA_MIX_BOTTLE_COST = 1375;
+const OREO_BISCUITS_PER_PACKET = 4;
+const OREO_PACKET_COST = 282 / 8;
+const MARSHMALLOW_PACKETS_PER_BOX = 18;
+const MARSHMALLOW_BOX_COST = 180;
+const DAIRY_MILK_BAR_G = 56;
+const DAIRY_MILK_BAR_COST = 250;
+const CHOCOLATE_CHIPS_PACK_G = 100;
+const CHOCOLATE_CHIPS_PACK_COST = 120;
+const COFFEE_BAG_G = 1000;
+const COFFEE_BAG_COST = 8100;
+const ICE_BAG_G = 1500;
+const ICE_BAG_COST = 91;
+const COLD_COFFEE_ICE_G = 106.5;
+const COLD_BREW_UNIT_COST = 715;
+const FROZEN_HOT_CHOCOLATE_CRAVE_CHOCOLATE_G = 55;
+const FROZEN_HOT_CHOCOLATE_MILK_ML = 200;
+const FROZEN_HOT_CHOCOLATE_CREAM_G = 50;
+const CREAM_PACK_G_ESTIMATE = 200;
+const CREAM_PACK_COST = 250;
+const CRAVE_CHOCOLATE_PACK_G_ESTIMATE = 1000;
+const CRAVE_CHOCOLATE_PACK_COST = 0;
+const STANDALONE_SAUCE_EXTRA_ML = 30;
+const STANDALONE_CHOCOLATE_CHIPS_G = 12;
+const STANDALONE_OREO_PACKETS = 1;
+const STANDALONE_MARSHMALLOW_PACKETS = 1;
+const STANDALONE_ICE_G = COLD_COFFEE_ICE_G;
+const KITKAT_FINGERS_PER_PACK = 2;
+const KITKAT_PACK_COST = 175;
+const WAFFLE_ICE_CREAM_ADDON_ML = 100;
+
+const WAFFLE_SIZE_FACTOR: Record<string, number> = {
+  Small: 0.25,
+  Medium: 0.5,
+  Large: 1,
+};
+
+const SAUCE_ML_BY_WAFFLE_SIZE: Record<string, number> = {
+  Small: 20,
+  Medium: 30,
+  Large: 40,
+};
+
+const OREO_BISCUITS_BY_WAFFLE_SIZE: Record<string, number> = {
+  Small: 2,
+  Medium: 3,
+  Large: 4,
+};
+
+const DAIRY_MILK_G_BY_WAFFLE_SIZE: Record<string, number> = {
+  Small: 12,
+  Medium: 22,
+  Large: 32,
+};
+
+const MARSHMALLOW_PACKETS_BY_WAFFLE_SIZE: Record<string, number> = {
+  Small: 0.67,
+  Medium: 1,
+  Large: 1.33,
+};
+
+const CHOCOLATE_CHIPS_G_BY_WAFFLE_SIZE: Record<string, number> = {
+  Small: 8,
+  Medium: 12,
+  Large: 16,
+};
+
+const KITKAT_FINGERS_BY_WAFFLE_SIZE: Record<string, number> = {
+  Small: 1,
+  Medium: 2,
+  Large: 3,
+};
+
+const FULL_WAFFLE_RECIPE = {
+  milkMl: 420,
+};
+
+function costFromPack(used: number, packSize: number, packCost: number) {
+  if (!packSize || !packCost) return 0;
+  return (used / packSize) * packCost;
+}
+
+function normalizeOptionName(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function isSauceOption(name: string) {
+  const n = normalizeOptionName(name);
+
+  return (
+    n === "nutella" ||
+    n === "nutella sauce" ||
+    n === "chocolate" ||
+    n === "chocolate sauce" ||
+    n === "strawberry" ||
+    n === "strawberry sauce" ||
+    n === "maple" ||
+    n === "maple sauce"
+  );
+}
+
+function sauceUsageName(name: string) {
+  const n = normalizeOptionName(name);
+
+  if (n === "nutella" || n === "nutella sauce") return "Nutella Sauce";
+  if (n === "chocolate" || n === "chocolate sauce") return "Chocolate Sauce";
+  if (n === "strawberry" || n === "strawberry sauce") return "Strawberry Sauce";
+  if (n === "maple" || n === "maple sauce") return "Maple Sauce";
+
+  return name;
+}
+
+function getSauceCost(name: string, ml: number) {
+  const sauceName = sauceUsageName(name);
+
+  if (sauceName === "Nutella Sauce") {
+    return costFromPack(ml, NUTELLA_MIX_BOTTLE_ML_ESTIMATE, NUTELLA_MIX_BOTTLE_COST);
+  }
+
+  if (sauceName === "Chocolate Sauce") {
+    return costFromPack(ml, HERSHEY_CHOCOLATE_BOTTLE_ML_ESTIMATE, HERSHEY_BOTTLE_COST);
+  }
+
+  if (sauceName === "Strawberry Sauce") {
+    return costFromPack(ml, HERSHEY_STRAWBERRY_BOTTLE_ML_ESTIMATE, HERSHEY_BOTTLE_COST);
+  }
+
+  if (sauceName === "Maple Sauce") {
+    return costFromPack(ml, MAPLE_BOTTLE_ML, MAPLE_BOTTLE_COST);
+  }
+
+  return 0;
+}
+
+function addEstimate(map: Map<string, UsageComparisonRow>, key: string, label: string, cost: number) {
+  const existing =
+    map.get(key) ||
+    ({
+      key,
+      label,
+      estimatedUsageCost: 0,
+      actualExpense: 0,
+      variance: 0,
+    } satisfies UsageComparisonRow);
+
+  existing.estimatedUsageCost += Number(cost || 0);
+  map.set(key, existing);
+}
+
+function buildUsageEstimateRows(
+  items: OrderItem[],
+  optionsByItemId: Map<string, OrderItemOption[]>,
+  productsById: Map<string, Product>
+) {
+  const map = new Map<string, UsageComparisonRow>();
+
+  items.forEach((item) => {
+    const product = item.product_id ? productsById.get(item.product_id) : null;
+    const category = product?.category || item.category;
+    const name = product?.name || item.product_name;
+    const size = product?.size || null;
+    const variant = product?.variant || null;
+    const quantity = Number(item.quantity || 1);
+    const options = optionsByItemId.get(item.id) || [];
+
+    if (category === "Cold Brew" || name === "Cold Brew") {
+      addEstimate(map, "coffee", "Coffee / Cold Brew", quantity * COLD_BREW_UNIT_COST);
+    }
+
+    if (category === "Extras") {
+      if (name === "Oreos") {
+        addEstimate(map, "toppings", "Toppings + Sauces", quantity * STANDALONE_OREO_PACKETS * OREO_PACKET_COST);
+      }
+
+      if (name === "Dairy Milk") {
+        addEstimate(map, "toppings", "Toppings + Sauces", quantity * DAIRY_MILK_BAR_COST);
+      }
+
+      if (["Nutella", "Chocolate", "Strawberry", "Maple"].includes(name)) {
+        addEstimate(map, "toppings", "Toppings + Sauces", getSauceCost(name, quantity * STANDALONE_SAUCE_EXTRA_ML));
+      }
+
+      if (name === "Chocolate Chips") {
+        addEstimate(
+          map,
+          "toppings",
+          "Toppings + Sauces",
+          costFromPack(quantity * STANDALONE_CHOCOLATE_CHIPS_G, CHOCOLATE_CHIPS_PACK_G, CHOCOLATE_CHIPS_PACK_COST)
+        );
+      }
+
+      if (name === "Marshmellow") {
+        addEstimate(
+          map,
+          "toppings",
+          "Toppings + Sauces",
+          costFromPack(quantity * STANDALONE_MARSHMALLOW_PACKETS, MARSHMALLOW_PACKETS_PER_BOX, MARSHMALLOW_BOX_COST)
+        );
+      }
+
+      if (name === "Ice") {
+        addEstimate(map, "ice", "Ice", costFromPack(quantity * STANDALONE_ICE_G, ICE_BAG_G, ICE_BAG_COST));
+      }
+    }
+
+    if (category === "Waffles") {
+      const factor = WAFFLE_SIZE_FACTOR[size || ""] || 1;
+      const sauceMl = SAUCE_ML_BY_WAFFLE_SIZE[size || ""] || 30;
+      const oreoBiscuits = OREO_BISCUITS_BY_WAFFLE_SIZE[size || ""] || 3;
+      const dairyMilkG = DAIRY_MILK_G_BY_WAFFLE_SIZE[size || ""] || 22;
+      const marshmallowPackets = MARSHMALLOW_PACKETS_BY_WAFFLE_SIZE[size || ""] || 1;
+      const chocolateChipsG = CHOCOLATE_CHIPS_G_BY_WAFFLE_SIZE[size || ""] || 12;
+
+      addEstimate(map, "milk", "Milk", costFromPack(FULL_WAFFLE_RECIPE.milkMl * factor * quantity, MILK_BOTTLE_ML, MILK_BOTTLE_COST));
+
+      if (name === "Kit Kat Waffle") {
+        const kitkatFingers = KITKAT_FINGERS_BY_WAFFLE_SIZE[size || ""] || 2;
+        addEstimate(map, "toppings", "Toppings + Sauces", costFromPack(kitkatFingers * quantity, KITKAT_FINGERS_PER_PACK, KITKAT_PACK_COST));
+        addEstimate(map, "toppings", "Toppings + Sauces", getSauceCost("Nutella Sauce", sauceMl * quantity));
+      }
+
+      options.forEach((option) => {
+        const optionName = option.option_name;
+
+        if (isSauceOption(optionName)) {
+          addEstimate(map, "toppings", "Toppings + Sauces", getSauceCost(optionName, sauceMl * quantity));
+          return;
+        }
+
+        if (optionName === "Oreos") {
+          addEstimate(map, "toppings", "Toppings + Sauces", costFromPack(oreoBiscuits * quantity, OREO_BISCUITS_PER_PACKET, OREO_PACKET_COST));
+          return;
+        }
+
+        if (optionName === "Dairy Milk") {
+          addEstimate(map, "toppings", "Toppings + Sauces", costFromPack(dairyMilkG * quantity, DAIRY_MILK_BAR_G, DAIRY_MILK_BAR_COST));
+          return;
+        }
+
+        if (optionName === "Marshmallows") {
+          addEstimate(map, "toppings", "Toppings + Sauces", costFromPack(marshmallowPackets * quantity, MARSHMALLOW_PACKETS_PER_BOX, MARSHMALLOW_BOX_COST));
+          return;
+        }
+
+        if (optionName === "Chocolate Chips") {
+          addEstimate(map, "toppings", "Toppings + Sauces", costFromPack(chocolateChipsG * quantity, CHOCOLATE_CHIPS_PACK_G, CHOCOLATE_CHIPS_PACK_COST));
+          return;
+        }
+
+        if (optionName === "Ice Cream Scoop") {
+          addEstimate(map, "ice_cream", "Ice Cream", costFromPack(WAFFLE_ICE_CREAM_ADDON_ML * quantity, ML_PER_ICE_CREAM_BOX, ICE_CREAM_BOX_COST));
+        }
+      });
+    }
+
+    if (category === "Ice Cream Shakes") {
+      const iceCreamMl = size === "Large" ? 400 : 300;
+      const milkMl = size === "Large" ? 70 : 50;
+
+      addEstimate(map, "ice_cream", "Ice Cream", costFromPack(iceCreamMl * quantity, ML_PER_ICE_CREAM_BOX, ICE_CREAM_BOX_COST));
+      addEstimate(map, "milk", "Milk", costFromPack(milkMl * quantity, MILK_BOTTLE_ML, MILK_BOTTLE_COST));
+    }
+
+    if (category === "Ice Cream") {
+      options
+        .filter((option) => option.option_group === "Ice Cream Flavor")
+        .forEach(() => {
+          addEstimate(map, "ice_cream", "Ice Cream", costFromPack(100 * quantity, ML_PER_ICE_CREAM_BOX, ICE_CREAM_BOX_COST));
+        });
+    }
+
+    if (category === "Drinks") {
+      const lowerName = name.toLowerCase();
+      const isHotChocolate = lowerName === "hot chocolate" || lowerName === "nutella hot chocolate";
+      const isFrozenHotChocolate = lowerName === "frozen hot chocolate";
+
+      if (isFrozenHotChocolate) {
+        addEstimate(map, "frozen_hot_chocolate", "Frozen Hot Chocolate Ingredients", costFromPack(FROZEN_HOT_CHOCOLATE_CREAM_G * quantity, CREAM_PACK_G_ESTIMATE, CREAM_PACK_COST));
+        addEstimate(map, "frozen_hot_chocolate", "Frozen Hot Chocolate Ingredients", costFromPack(FROZEN_HOT_CHOCOLATE_CRAVE_CHOCOLATE_G * quantity, CRAVE_CHOCOLATE_PACK_G_ESTIMATE, CRAVE_CHOCOLATE_PACK_COST));
+        addEstimate(map, "milk", "Milk", costFromPack(FROZEN_HOT_CHOCOLATE_MILK_ML * quantity, MILK_BOTTLE_ML, MILK_BOTTLE_COST));
+        addEstimate(map, "ice", "Ice", costFromPack(COLD_COFFEE_ICE_G * quantity, ICE_BAG_G, ICE_BAG_COST));
+      }
+
+      if (!isHotChocolate && !isFrozenHotChocolate) {
+        const coffeeG = lowerName.includes("cappuccino") ? 16 : 12;
+        addEstimate(map, "coffee", "Coffee / Cold Brew", costFromPack(coffeeG * quantity, COFFEE_BAG_G, COFFEE_BAG_COST));
+      }
+
+      if (variant === "Cold" && !isFrozenHotChocolate) {
+        addEstimate(map, "milk", "Milk", costFromPack(180 * quantity, MILK_BOTTLE_ML, MILK_BOTTLE_COST));
+        addEstimate(map, "ice", "Ice", costFromPack(COLD_COFFEE_ICE_G * quantity, ICE_BAG_G, ICE_BAG_COST));
+      }
+
+      if (variant === "Hot" && lowerName.includes("cappuccino")) {
+        addEstimate(map, "milk", "Milk", costFromPack(140 * quantity, MILK_BOTTLE_ML, MILK_BOTTLE_COST));
+      }
+
+      if (variant === "Hot" && lowerName.includes("latte") && !lowerName.includes("cappuccino")) {
+        addEstimate(map, "milk", "Milk", costFromPack(180 * quantity, MILK_BOTTLE_ML, MILK_BOTTLE_COST));
+      }
+
+      if (isHotChocolate) {
+        addEstimate(map, "milk", "Milk", costFromPack(200 * quantity, MILK_BOTTLE_ML, MILK_BOTTLE_COST));
+      }
+
+      if (lowerName === "nutella hot chocolate") {
+        addEstimate(map, "toppings", "Toppings + Sauces", getSauceCost("Nutella Sauce", 40 * quantity));
+      }
+
+      if (lowerName.includes("hazelnut")) {
+        addEstimate(map, "syrups", "Syrups", costFromPack((variant === "Cold" ? 20 : 10) * quantity, SYRUP_BOTTLE_ML, COFFEE_SYRUP_BOTTLE_COST));
+      }
+
+      if (lowerName.includes("caramel")) {
+        addEstimate(map, "syrups", "Syrups", costFromPack((variant === "Cold" ? 25 : 10) * quantity, SYRUP_BOTTLE_ML, COFFEE_SYRUP_BOTTLE_COST));
+      }
+
+      if (lowerName.includes("vanilla")) {
+        addEstimate(map, "syrups", "Syrups", costFromPack((variant === "Cold" ? 25 : 10) * quantity, SYRUP_BOTTLE_ML, COFFEE_SYRUP_BOTTLE_COST));
+      }
+
+      if (lowerName.includes("mocha")) {
+        addEstimate(map, "syrups", "Syrups", costFromPack((variant === "Cold" ? 30 : 10) * quantity, SYRUP_BOTTLE_ML, COFFEE_SYRUP_BOTTLE_COST));
+      }
+    }
+  });
+
+  return map;
+}
+
+function expenseComparisonKey(expense: Expense) {
+  if (expense.category === "ice_cream") return "ice_cream";
+  if (expense.category === "milk") return "milk";
+  if (expense.category === "coffee") return "coffee";
+  if (expense.category === "syrups") return "syrups";
+  if (expense.category === "toppings") return "toppings";
+  if (expense.category === "ice") return "ice";
+  if (expense.category === "packaging") return "packaging";
+
+  const item = (expense.item_name || "").trim().toLowerCase();
+
+  if (expense.category === "imtiaz" && (item === "cream" || item === "crave chocolate")) {
+    return "frozen_hot_chocolate";
+  }
+
+  return "other";
+}
+
+function comparisonLabel(key: string) {
+  if (key === "ice_cream") return "Ice Cream";
+  if (key === "milk") return "Milk";
+  if (key === "coffee") return "Coffee / Cold Brew";
+  if (key === "syrups") return "Syrups";
+  if (key === "toppings") return "Toppings + Sauces";
+  if (key === "ice") return "Ice";
+  if (key === "packaging") return "Packaging Extras";
+  if (key === "frozen_hot_chocolate") return "Frozen Hot Chocolate Ingredients";
+  return "Other Expenses";
+}
+
+function freeReasonLabel(reason: string | null | undefined) {
+  if (reason === "loyalty_free") return "Loyalty Free";
+  if (reason === "shahzain_fatima") return "Shahzain/Fatima";
+  if (reason === "jalal") return "Jalal";
+  return "Free Order";
+}
+
 export default function AdminReportsPage() {
   const router = useRouter();
 
@@ -121,6 +531,8 @@ export default function AdminReportsPage() {
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [itemOptions, setItemOptions] = useState<OrderItemOption[]>([]);
   const [legacyRevenue, setLegacyRevenue] = useState<LegacyRevenue[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [selectedDate, setSelectedDate] = useState<string>("");
@@ -155,6 +567,19 @@ export default function AdminReportsPage() {
         return;
       }
 
+      const { data: productData } = await supabase
+        .from("products")
+        .select("id, category, name, variant, size, price");
+
+      setProducts((productData || []) as Product[]);
+
+      const { data: expenseData } = await supabase
+        .from("expenses")
+        .select("id, category, item_name, amount, expense_date, note, created_at")
+        .order("expense_date", { ascending: false });
+
+      setExpenses((expenseData || []) as Expense[]);
+
       const { data: orderData, error: orderError } = await supabase
         .from("orders")
         .select("*")
@@ -165,6 +590,8 @@ export default function AdminReportsPage() {
         setOrderItems([]);
         setItemOptions([]);
         setLegacyRevenue([]);
+        setExpenses([]);
+        setProducts([]);
         return;
       }
 
@@ -257,6 +684,16 @@ export default function AdminReportsPage() {
 
     return map;
   }, [itemOptions]);
+
+  const productsById = useMemo(() => {
+    const map = new Map<string, Product>();
+
+    products.forEach((product) => {
+      map.set(product.id, product);
+    });
+
+    return map;
+  }, [products]);
 
   const dailySummaries = useMemo(() => {
     const map = new Map<string, DaySummary>();
@@ -461,6 +898,17 @@ export default function AdminReportsPage() {
       (row) => row.revenue_date.slice(0, 7) === selectedMonth
     );
   }, [legacyRevenue, selectedDate, selectedMonth, viewMode]);
+
+  const focusedExpenses = useMemo(() => {
+    if (viewMode === "daily") {
+      if (!selectedDate) return [];
+      return expenses.filter((expense) => expense.expense_date === selectedDate);
+    }
+
+    if (!selectedMonth) return [];
+
+    return expenses.filter((expense) => expense.expense_date.slice(0, 7) === selectedMonth);
+  }, [expenses, selectedDate, selectedMonth, viewMode]);
 
   const focusedRevenueOrders = useMemo(() => {
     return focusedOrders.filter(isRevenueOrder);
@@ -706,6 +1154,56 @@ export default function AdminReportsPage() {
       .sort((a, b) => b.qty - a.qty);
   }, [focusedRevenueOptions]);
 
+
+  const usageComparisonRows = useMemo(() => {
+    const estimateMap = buildUsageEstimateRows(
+      focusedRevenueItems,
+      optionsByItemId,
+      productsById
+    );
+
+    focusedExpenses.forEach((expense) => {
+      const key = expenseComparisonKey(expense);
+      const label = comparisonLabel(key);
+      const existing =
+        estimateMap.get(key) ||
+        ({
+          key,
+          label,
+          estimatedUsageCost: 0,
+          actualExpense: 0,
+          variance: 0,
+        } satisfies UsageComparisonRow);
+
+      existing.actualExpense += Number(expense.amount || 0);
+      estimateMap.set(key, existing);
+    });
+
+    return Array.from(estimateMap.values())
+      .map((row) => ({
+        ...row,
+        estimatedUsageCost: Math.round(row.estimatedUsageCost),
+        actualExpense: Math.round(row.actualExpense),
+        variance: Math.round(row.actualExpense - row.estimatedUsageCost),
+      }))
+      .sort((a, b) => {
+        const aTotal = Math.max(a.actualExpense, a.estimatedUsageCost);
+        const bTotal = Math.max(b.actualExpense, b.estimatedUsageCost);
+        return bTotal - aTotal;
+      });
+  }, [focusedRevenueItems, optionsByItemId, productsById, focusedExpenses]);
+
+  const usageComparisonTotals = useMemo(() => {
+    return usageComparisonRows.reduce(
+      (totals, row) => ({
+        estimated: totals.estimated + row.estimatedUsageCost,
+        actual: totals.actual + row.actualExpense,
+        variance: totals.variance + row.variance,
+      }),
+      { estimated: 0, actual: 0, variance: 0 }
+    );
+  }, [usageComparisonRows]);
+
   function getItemDisplayName(item: OrderItem) {
     const options = optionsByItemId.get(item.id) || [];
 
@@ -822,28 +1320,7 @@ export default function AdminReportsPage() {
                 href="/admin"
                 className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
               >
-                Admin Home
-              </Link>
-
-              <Link
-                href="/admin/dashboard"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Dashboard
-              </Link>
-
-              <Link
-                href="/admin/expenses"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Expenses
-              </Link>
-
-              <Link
-                href="/admin/split"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Split
+                Back
               </Link>
 
               <button
@@ -1149,6 +1626,102 @@ export default function AdminReportsPage() {
               </div>
             </section>
 
+
+            <section className="mt-5 rounded-[30px] bg-[#151922] border border-white/10 p-5">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between mb-5">
+                <div>
+                  <h2 className="text-2xl font-bold">Usage Cost vs Expenses</h2>
+                  <p className="text-white/50 mt-1">
+                    Compares estimated POS usage cost with actual expenses entered for the selected {viewMode === "daily" ? "day" : "month"}.
+                    Legacy revenue has no item-level usage, so this uses POS orders only.
+                  </p>
+                </div>
+
+                <div className="grid sm:grid-cols-3 gap-3 w-full lg:w-auto">
+                  <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
+                    <p className="text-white/50 text-sm">Estimated Usage</p>
+                    <p className="text-xl font-bold text-green-200">
+                      {money(usageComparisonTotals.estimated)}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
+                    <p className="text-white/50 text-sm">Actual Expenses</p>
+                    <p className="text-xl font-bold text-pink-100">
+                      {money(usageComparisonTotals.actual)}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
+                    <p className="text-white/50 text-sm">Actual - Usage</p>
+                    <p
+                      className={`text-xl font-bold ${
+                        usageComparisonTotals.variance > 0
+                          ? "text-red-200"
+                          : "text-green-200"
+                      }`}
+                    >
+                      {money(usageComparisonTotals.variance)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {usageComparisonRows.length === 0 ? (
+                <div className="rounded-2xl bg-white/5 p-4 text-white/55">
+                  No usage or expense data for this selection.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[860px] border-separate border-spacing-y-2">
+                    <thead>
+                      <tr className="text-left text-white/50 text-sm">
+                        <th className="px-4 py-2">Category</th>
+                        <th className="px-4 py-2">Estimated Usage Cost</th>
+                        <th className="px-4 py-2">Actual Expenses</th>
+                        <th className="px-4 py-2">Difference</th>
+                        <th className="px-4 py-2">Meaning</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {usageComparisonRows.map((row) => (
+                        <tr key={row.key}>
+                          <td className="rounded-l-2xl bg-white/5 px-4 py-4 font-bold">
+                            {row.label}
+                          </td>
+                          <td className="bg-white/5 px-4 py-4 text-green-200 font-bold">
+                            {money(row.estimatedUsageCost)}
+                          </td>
+                          <td className="bg-white/5 px-4 py-4 text-pink-100 font-bold">
+                            {money(row.actualExpense)}
+                          </td>
+                          <td
+                            className={`bg-white/5 px-4 py-4 font-bold ${
+                              row.variance > 0 ? "text-red-200" : "text-green-200"
+                            }`}
+                          >
+                            {money(row.variance)}
+                          </td>
+                          <td className="rounded-r-2xl bg-white/5 px-4 py-4 text-white/60">
+                            {row.variance > 0
+                              ? "You bought/spent more than this period's POS usage estimate."
+                              : row.variance < 0
+                              ? "POS usage estimate is higher than expenses entered for this period."
+                              : "Actual expenses match estimated POS usage."}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="mt-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/20 p-4 text-yellow-100 text-sm">
+                Crave Chocolate cost is still set to Rs. 0 because its pack cost was not given yet, so Frozen Hot Chocolate is undercounted until that is updated.
+              </div>
+            </section>
+
             {focusedLegacyRevenue.length > 0 && (
               <section className="mt-5 rounded-[30px] bg-[#151922] border border-white/10 p-5">
                 <div className="flex items-center justify-between gap-3 mb-5">
@@ -1302,6 +1875,12 @@ export default function AdminReportsPage() {
                                 <p className="text-[#d81b72] font-bold mt-1">
                                   Discount: -{" "}
                                   {money(Number(order.discount || 0))}
+                                </p>
+                              )}
+
+                              {order.is_free && (
+                                <p className="text-green-200 font-bold mt-1">
+                                  Free Order: {freeReasonLabel(order.free_reason)}
                                 </p>
                               )}
                             </div>

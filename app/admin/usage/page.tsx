@@ -99,6 +99,26 @@ const ICE_BAG_COST = 91;
 
 const COLD_COFFEE_ICE_G = 106.5;
 
+const COLD_BREW_UNIT_COST = 715;
+
+// Frozen hot chocolate assumptions.
+// User gave cream cost but not pack size; using 200g pack as editable assumption.
+// User gave Crave chocolate quantity but not pack cost, so cost is left unset at 0 until updated.
+const FROZEN_HOT_CHOCOLATE_CRAVE_CHOCOLATE_G = 55;
+const FROZEN_HOT_CHOCOLATE_MILK_ML = 200;
+const FROZEN_HOT_CHOCOLATE_CREAM_G = 50;
+const CREAM_PACK_G_ESTIMATE = 200;
+const CREAM_PACK_COST = 250;
+const CRAVE_CHOCOLATE_PACK_G_ESTIMATE = 1000;
+const CRAVE_CHOCOLATE_PACK_COST = 0;
+
+// Standalone extras assumptions. Edit if your portions differ.
+const STANDALONE_SAUCE_EXTRA_ML = 30;
+const STANDALONE_CHOCOLATE_CHIPS_G = 12;
+const STANDALONE_OREO_PACKETS = 1;
+const STANDALONE_MARSHMALLOW_PACKETS = 1;
+const STANDALONE_ICE_G = COLD_COFFEE_ICE_G;
+
 const KITKAT_FINGERS_PER_PACK = 2;
 const KITKAT_PACK_COST = 175;
 
@@ -270,6 +290,7 @@ function getShakeFlavor(productName: string) {
   if (n.includes("vanilla")) return "Vanilla";
   if (n.includes("chocolate")) return "Chocolate";
   if (n.includes("cookies")) return "Cookies & Cream";
+  if (n.includes("mango")) return "Mango";
 
   return "Unknown Flavor";
 }
@@ -509,6 +530,149 @@ export default function UsagePage() {
       const variant = product?.variant || null;
       const quantity = Number(item.quantity || 1);
       const options = optionsByItemId.get(item.id) || [];
+
+      if (category === "Cold Brew" || name === "Cold Brew") {
+        addUsage(usage, {
+          section: "Cold Brew",
+          item: "Cold Brew",
+          used: quantity,
+          unit: "bottles",
+          packSize: 1,
+          packLabel: "cold brew unit",
+          packCost: COLD_BREW_UNIT_COST,
+          calculations: [
+            `${quantity} Cold Brew sold × ${money(COLD_BREW_UNIT_COST)} cost = ${money(
+              quantity * COLD_BREW_UNIT_COST
+            )}`,
+          ],
+          note: "Fixed purchase cost per Cold Brew unit.",
+        });
+      }
+
+      if (category === "Extras") {
+        if (name === "Oreos") {
+          const used = STANDALONE_OREO_PACKETS * quantity;
+          addUsage(usage, {
+            section: "Standalone Extras",
+            item: "Oreos",
+            used,
+            unit: "packets",
+            packSize: 8,
+            packLabel: "8-pack Oreo bundle",
+            packCost: 282,
+            calculations: [
+              `${quantity} standalone Oreo item(s) × ${STANDALONE_OREO_PACKETS} packet = ${round(used, 2)} packets`,
+              `${round(used, 2)} packets ÷ 8 packets per bundle × ${money(282)} = ${money((used / 8) * 282)}`,
+            ],
+            note: "Standalone extra assumption: 1 Oreo packet per sale.",
+          });
+        }
+
+        if (name === "Dairy Milk") {
+          const used = DAIRY_MILK_BAR_G * quantity;
+          addUsage(usage, {
+            section: "Standalone Extras",
+            item: "Dairy Milk",
+            used,
+            unit: "g",
+            packSize: DAIRY_MILK_BAR_G,
+            packLabel: "56g bar",
+            packCost: DAIRY_MILK_BAR_COST,
+            calculations: [
+              `${quantity} standalone Dairy Milk item(s) × ${DAIRY_MILK_BAR_G}g = ${round(used, 2)}g`,
+              `${round(used, 2)}g ÷ ${DAIRY_MILK_BAR_G}g per bar × ${money(DAIRY_MILK_BAR_COST)} = ${money((used / DAIRY_MILK_BAR_G) * DAIRY_MILK_BAR_COST)}`,
+            ],
+            note: "Standalone Dairy Milk uses a full bar.",
+          });
+        }
+
+        if (["Nutella", "Chocolate", "Strawberry", "Maple"].includes(name)) {
+          const sauceName = sauceUsageName(name);
+          const pack = getSaucePackInfo(sauceName);
+          const used = STANDALONE_SAUCE_EXTRA_ML * quantity;
+          addUsage(usage, {
+            section: "Standalone Extras",
+            item: sauceName,
+            used,
+            unit: "ml",
+            packSize: pack.packSize,
+            packLabel: pack.packLabel,
+            packCost: pack.packCost,
+            calculations: [
+              `${quantity} standalone ${sauceName} item(s) × ${STANDALONE_SAUCE_EXTRA_ML}ml = ${round(used, 2)}ml`,
+              pack.packSize
+                ? `${round(used, 2)}ml ÷ ${pack.packSize}ml per ${pack.packLabel} = ${round(used / pack.packSize, 2)} bottles`
+                : "No bottle size set.",
+            ],
+            note: "Standalone sauce extra assumption: 30ml per sale.",
+          });
+        }
+
+        if (name === "Chocolate Chips") {
+          const used = STANDALONE_CHOCOLATE_CHIPS_G * quantity;
+          addUsage(usage, {
+            section: "Standalone Extras",
+            item: "Chocolate Chips",
+            used,
+            unit: "g",
+            packSize: CHOCOLATE_CHIPS_PACK_G,
+            packLabel: "100g pack",
+            packCost: CHOCOLATE_CHIPS_PACK_COST,
+            calculations: [
+              `${quantity} standalone chocolate chip item(s) × ${STANDALONE_CHOCOLATE_CHIPS_G}g = ${round(used, 2)}g`,
+              `${round(used, 2)}g ÷ ${CHOCOLATE_CHIPS_PACK_G}g per pack × ${money(CHOCOLATE_CHIPS_PACK_COST)} = ${money((used / CHOCOLATE_CHIPS_PACK_G) * CHOCOLATE_CHIPS_PACK_COST)}`,
+            ],
+            note: "Standalone chocolate chips assumption: 12g per sale.",
+          });
+        }
+
+        if (name === "Marshmellow") {
+          const used = STANDALONE_MARSHMALLOW_PACKETS * quantity;
+          addUsage(usage, {
+            section: "Standalone Extras",
+            item: "Marshmallows",
+            used,
+            unit: "packets",
+            packSize: MARSHMALLOW_PACKETS_PER_BOX,
+            packLabel: "18-pack box",
+            packCost: MARSHMALLOW_BOX_COST,
+            calculations: [
+              `${quantity} standalone marshmellow item(s) × ${STANDALONE_MARSHMALLOW_PACKETS} packet = ${round(used, 2)} packets`,
+              `${round(used, 2)} packets ÷ ${MARSHMALLOW_PACKETS_PER_BOX} packets per box × ${money(MARSHMALLOW_BOX_COST)} = ${money((used / MARSHMALLOW_PACKETS_PER_BOX) * MARSHMALLOW_BOX_COST)}`,
+            ],
+            note: "Standalone marshmellow assumption: 1 packet per sale.",
+          });
+        }
+
+        if (name === "Ice") {
+          const used = STANDALONE_ICE_G * quantity;
+          addUsage(usage, {
+            section: "Standalone Extras",
+            item: "Ice",
+            used,
+            unit: "g",
+            packSize: ICE_BAG_G,
+            packLabel: "1.5kg ice bag",
+            packCost: ICE_BAG_COST,
+            calculations: [
+              `${quantity} standalone ice item(s) × ${STANDALONE_ICE_G}g = ${round(used, 2)}g`,
+              `${round(used, 2)}g ÷ ${ICE_BAG_G}g per bag × ${money(ICE_BAG_COST)} = ${money((used / ICE_BAG_G) * ICE_BAG_COST)}`,
+            ],
+            note: "Standalone ice assumption uses same quantity as cold coffee ice.",
+          });
+        }
+
+        if (["Small Plate", "Big Plate", "Spoon", "Knife", "Fork", "Regular Cup", "Large Cup", "Coffee Cup", "Straw"].includes(name)) {
+          addUsage(usage, {
+            section: "Packaging Extras",
+            item: name,
+            used: quantity,
+            unit: "pcs",
+            calculations: [`${quantity} ${name} standalone item(s) sold = ${quantity} pcs`],
+            note: "Cost not set yet for packaging/cutlery extras.",
+          });
+        }
+      }
 
       if (category === "Waffles") {
         const factor = WAFFLE_SIZE_FACTOR[size || ""] || 1;
@@ -979,8 +1143,78 @@ export default function UsagePage() {
 
         const isHotChocolate =
           lowerName === "hot chocolate" || lowerName === "nutella hot chocolate";
+        const isFrozenHotChocolate = lowerName === "frozen hot chocolate";
 
-        if (!isHotChocolate) {
+        if (isFrozenHotChocolate) {
+          const craveUsed = FROZEN_HOT_CHOCOLATE_CRAVE_CHOCOLATE_G * quantity;
+          const milkUsed = FROZEN_HOT_CHOCOLATE_MILK_ML * quantity;
+          const creamUsed = FROZEN_HOT_CHOCOLATE_CREAM_G * quantity;
+          const iceUsed = COLD_COFFEE_ICE_G * quantity;
+
+          addUsage(usage, {
+            section: "Frozen Hot Chocolate",
+            item: "Crave Chocolate",
+            used: craveUsed,
+            unit: "g",
+            packSize: CRAVE_CHOCOLATE_PACK_G_ESTIMATE,
+            packLabel: "Crave chocolate pack estimate",
+            packCost: CRAVE_CHOCOLATE_PACK_COST || undefined,
+            calculations: [
+              `${quantity} frozen hot chocolate(s) × ${FROZEN_HOT_CHOCOLATE_CRAVE_CHOCOLATE_G}g Crave chocolate = ${round(craveUsed, 2)}g`,
+              CRAVE_CHOCOLATE_PACK_COST > 0
+                ? `${round(craveUsed, 2)}g ÷ ${CRAVE_CHOCOLATE_PACK_G_ESTIMATE}g × ${money(CRAVE_CHOCOLATE_PACK_COST)} = ${money((craveUsed / CRAVE_CHOCOLATE_PACK_G_ESTIMATE) * CRAVE_CHOCOLATE_PACK_COST)}`
+                : "Crave chocolate cost missing. Add cost constants to include this in total cost.",
+            ],
+            note: "Cost missing until Crave chocolate pack cost is set.",
+          });
+
+          addUsage(usage, {
+            section: "Frozen Hot Chocolate",
+            item: "Cream",
+            used: creamUsed,
+            unit: "g",
+            packSize: CREAM_PACK_G_ESTIMATE,
+            packLabel: "cream pack estimate",
+            packCost: CREAM_PACK_COST,
+            calculations: [
+              `${quantity} frozen hot chocolate(s) × ${FROZEN_HOT_CHOCOLATE_CREAM_G}g cream = ${round(creamUsed, 2)}g`,
+              `${round(creamUsed, 2)}g ÷ ${CREAM_PACK_G_ESTIMATE}g per cream pack × ${money(CREAM_PACK_COST)} = ${money((creamUsed / CREAM_PACK_G_ESTIMATE) * CREAM_PACK_COST)}`,
+            ],
+            note: "Cream pack size assumed as 200g. Edit constant if different.",
+          });
+
+          addUsage(usage, {
+            section: "Milk",
+            item: "Milk",
+            used: milkUsed,
+            unit: "ml",
+            packSize: MILK_BOTTLE_ML,
+            packLabel: "1L milk bottle",
+            packCost: MILK_BOTTLE_COST,
+            calculations: [
+              `${quantity} frozen hot chocolate(s) × ${FROZEN_HOT_CHOCOLATE_MILK_ML}ml milk = ${round(milkUsed, 2)}ml`,
+              `${round(milkUsed, 2)}ml ÷ ${MILK_BOTTLE_ML}ml per bottle × ${money(MILK_BOTTLE_COST)} = ${money((milkUsed / MILK_BOTTLE_ML) * MILK_BOTTLE_COST)}`,
+            ],
+            note: "Frozen hot chocolate milk.",
+          });
+
+          addUsage(usage, {
+            section: "Ice",
+            item: "Ice",
+            used: iceUsed,
+            unit: "g",
+            packSize: ICE_BAG_G,
+            packLabel: "1.5kg ice bag",
+            packCost: ICE_BAG_COST,
+            calculations: [
+              `${quantity} frozen hot chocolate(s) × ${COLD_COFFEE_ICE_G}g ice = ${round(iceUsed, 2)}g`,
+              `${round(iceUsed, 2)}g ÷ ${ICE_BAG_G}g per bag × ${money(ICE_BAG_COST)} = ${money((iceUsed / ICE_BAG_G) * ICE_BAG_COST)}`,
+            ],
+            note: "Uses same ice estimate as iced latte/cold coffee.",
+          });
+        }
+
+        if (!isHotChocolate && !isFrozenHotChocolate) {
           const coffeeG = lowerName.includes("cappuccino") ? 16 : 12;
           const used = coffeeG * quantity;
 
@@ -1008,7 +1242,7 @@ export default function UsagePage() {
           });
         }
 
-        if (variant === "Cold") {
+        if (variant === "Cold" && !isFrozenHotChocolate) {
           const milkUsed = 180 * quantity;
 
           addUsage(usage, {
@@ -1401,21 +1635,7 @@ export default function UsagePage() {
                 href="/admin"
                 className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
               >
-                Admin Home
-              </Link>
-
-              <Link
-                href="/admin/reports"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Reports
-              </Link>
-
-              <Link
-                href="/admin/expenses"
-                className="rounded-2xl border border-white/10 bg-[#0f1115] px-5 py-3 font-bold text-white"
-              >
-                Expenses
+                Back
               </Link>
 
               <button
